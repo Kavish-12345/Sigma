@@ -148,6 +148,12 @@ def design_objective(form: dict) -> str:
     return "min_weight" if w > c else "min_cost"
 
 
+def _objective_text(form: dict, objective: str) -> str:
+    if form["weight_priority"] == form["cost_priority"] == "not_important":
+        return "Best suitability (cost and weight not important)"
+    return "Minimise mass" if objective == "min_weight" else "Minimise material cost"
+
+
 def _design_block(form: dict) -> dict | None:
     """Translation + design calculation, or None when the user skipped the design step."""
     fn = form["function"]
@@ -159,8 +165,7 @@ def _design_block(form: dict) -> dict | None:
     return {
         "function": fn,
         "function_label": FUNCTIONS[fn]["label"],
-        "translation": translation(fn, calc["inputs"], "Minimise mass" if objective == "min_weight"
-                                   else "Minimise material cost", env),
+        "translation": translation(fn, calc["inputs"], _objective_text(form, objective), env),
         **calc,
         "index": material_index(fn, objective),
     }
@@ -325,12 +330,16 @@ def recommend(form: dict) -> dict:
     benefit = np.array([k in ("suitability", "corrosion", "index") for k in crit_keys])
     cand["topsis"] = topsis(cand[crit].to_numpy(dtype=float), w, benefit)
     # Usual practice adjusts the score, so a clearly better or cheaper material can still come first
-    cand["usage"] = usage_rank(cand["price_category"], form.get("part_type") or PART_TYPE_OF_FUNCTION.get(form["function"]))
+    cand["usage"] = usage_rank(cand["price_category"], form.get("part_type") or PART_TYPE_OF_FUNCTION.get(form["function"]),
+                               form.get("usage_groups"))
     factors = {**USAGE_FACTOR, 1: 1.0} if form["cost_priority"] == "critical" else USAGE_FACTOR  # cheaper groups may lead
     cand["ranking"] = cand["topsis"] * cand["usage"].map(factors)
-    cand = cand.sort_values(["ranking", "suitability"], ascending=False)
+    # Unusual groups come last, shown only if too few others remain. The AI judged this exact part, so its usual groups lead
+    ai_rule = bool(form.get("usage_groups"))
+    cand["tier"] = cand["usage"] if ai_rule else cand["usage"] > 0
+    cand = cand.sort_values(["tier", "ranking", "suitability"], ascending=False)
 
-    top = _varied(cand, form["top_n"])
+    top = _varied(cand, form["top_n"], trust_usual=ai_rule)
     ref = top.iloc[0]["cost_typical"]  # #1's typical cost, for the comparison label
     results = [_explain(row, rank, targets, eff, vol, ref, design)
                for rank, (_, row) in enumerate(top.iterrows(), start=1)]
@@ -359,23 +368,27 @@ def _strength_margin(cand: pd.DataFrame, design: dict) -> pd.Series:
     return pd.concat(ratios, axis=1).min(axis=1)
 
 
-def _varied(cand: pd.DataFrame, n: int) -> pd.DataFrame:
+def _varied(cand: pd.DataFrame, n: int, trust_usual: bool = False) -> pd.DataFrame:
     """
     Top n in TOPSIS order, but a real choice: skip near-copies of a material already picked
     (same group, strength within NEAR_COPY) and limit how many come from one group.
     Poor fits are held back too, so variety never replaces a suitable material with a much weaker one.
-    Only a shortage of other candidates brings the skipped ones back: group limit, then copies, then poor fits.
+    Only a shortage of other candidates brings the skipped ones back: group limit, copies, poor fits,
+    and unusual groups last, so a weak but normal choice still beats a strong unusual one.
     """
     cap = max(MAX_PER_GROUP, math.ceil(n * 0.3))
-    floor = max(MIN_SUITABILITY, cand["suitability"].max() - SUITABILITY_GAP)
-    picked, over_cap, copies, poor = [], [], [], []
+    # measured from acceptable materials only: a rejected material must not set the bar
+    floor = max(MIN_SUITABILITY, cand.loc[cand["usage"] > 0, "suitability"].max() - SUITABILITY_GAP)
+    picked, over_cap, copies, poor, unusual = [], [], [], [], []
     kept: dict[str, list[tuple[float, float]]] = {}   # group -> (Sy, Su) already picked
-    rows = zip(cand["price_category"], cand["Sy"], cand["Su"], cand["suitability"])
-    for pos, (group, sy, su, suitability) in enumerate(rows):
+    rows = zip(cand["price_category"], cand["Sy"], cand["Su"], cand["suitability"], cand["usage"])
+    for pos, (group, sy, su, suitability, usage) in enumerate(rows):
         if len(picked) == n:
             break
         same = kept.get(group, [])
-        if suitability < floor:
+        if usage == 0:
+            unusual.append(pos)
+        elif suitability < floor and not (trust_usual and usage == 2):
             poor.append(pos)
         elif any(abs(a - sy) <= NEAR_COPY * sy and abs(b - su) <= NEAR_COPY * su for a, b in same):
             copies.append(pos)
@@ -384,7 +397,7 @@ def _varied(cand: pd.DataFrame, n: int) -> pd.DataFrame:
         else:
             picked.append(pos)
             kept.setdefault(group, []).append((sy, su))
-    picked += (over_cap + copies + poor)[:n - len(picked)]
+    picked += (over_cap + copies + poor + unusual)[:n - len(picked)]
     return cand.iloc[sorted(picked)]
 
 

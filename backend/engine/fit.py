@@ -52,9 +52,10 @@ PART_TYPE_OF_FUNCTION = {"gear": "gear", "shaft": "shaft", "tie": "rod", "spring
                          "pressure_vessel": "vessel", "beam": "beam"}
 
 
-def usage_rank(group: pd.Series, part_type: str | None) -> pd.Series:
-    """2 = normal for this kind of part, 1 = no rule, 0 = unusual. No known part type: all equal."""
-    rule = USAGE.get(part_type, {})
+def usage_rank(group: pd.Series, part_type: str | None, ai_rule: dict | None = None) -> pd.Series:
+    """2 = normal for this part, 1 = no rule, 0 = unusual. The AI's judgement for this exact part
+    and service comes first; USAGE is the fallback for Form mode or if the AI gave none."""
+    rule = ai_rule or USAGE.get(part_type, {})
     rank = {**{g: 2 for g in rule.get("normal", ())}, **{g: 0 for g in rule.get("unusual", ())}}
     return group.map(rank).fillna(1).astype(int)
 
