@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from backend.engine.design import COMMON_INPUTS, FUNCTIONS, clean_inputs
+from backend.engine.design import COMMON_INPUTS, FUNCTIONS, MissingInput, clean_inputs
 from backend.engine.options import FAMILIES, FIELDS, MIN_LIMIT_FIELDS
 
 # function + design_inputs = Ashby "translation" (what the part does, its loads and sizes)
@@ -31,6 +31,12 @@ def empty_form() -> dict:
     form["user_words"] = {}
     form["suggested"] = []   # AI suggestions for 'properties' (shown pre-ticked; never counted until confirmed)
     form["design_draft"] = {}  # design inputs given so far (prefills the card until all are known)
+    form["details"] = []  # part-specific questions answered so far (see part_detail.py)
+    form["pending_detail"] = None  # the part-specific question currently open
+    form["details_done"] = False
+    form["guide"] = {}  # part-specific explanation for a form field
+    form["hints"] = {}  # typical values for the design inputs (guidance only, never filled in)
+    form["notes"] = []  # engineering cautions from the answers, shown with the results
     return form
 
 
@@ -43,6 +49,12 @@ def normalise_form(form: dict | None) -> dict:
         base["user_words"] = dict(form.get("user_words") or {})
         base["suggested"] = list(form.get("suggested") or [])
         base["design_draft"] = dict(form.get("design_draft") or {})
+        base["details"] = list(form.get("details") or [])
+        base["pending_detail"] = form.get("pending_detail")
+        base["details_done"] = bool(form.get("details_done"))
+        base["guide"] = dict(form.get("guide") or {})
+        base["hints"] = dict(form.get("hints") or {})
+        base["notes"] = list(form.get("notes") or [])
     return base
 
 
@@ -107,9 +119,10 @@ def apply_answer(form: dict, field: str, value, user_words: str, groups: list[st
     text = raw if isinstance(raw, str) else str(raw)
 
     if field == "part_name":
-        if not text.strip():
+        name = text.strip() or str(user_words or "").strip()
+        if not name:
             return "part_name must not be empty"
-        form[field] = text.strip()[:80]
+        form[field] = name[:80]
 
     elif field == "function":
         if _is_none_word(text):
@@ -140,6 +153,11 @@ def apply_answer(form: dict, field: str, value, user_words: str, groups: list[st
             form["design_draft"] = draft
             try:
                 form[field] = clean_inputs(fn, draft)
+            except MissingInput as e:
+                if not isinstance(raw, dict):
+                    return f"{e}. Saved so far: {draft}. Ask the user for the missing value(s)."
+                form[field] = "not_sure"  # a card submitted as it is: go on without the calculation
+                form["notes"].append(f"Stress calculation skipped: {str(e)[0].lower()}{str(e)[1:]}.")
             except ValueError as e:
                 return f"{e}. Saved so far: {draft}. Ask the user for the missing value(s)."
 
@@ -178,10 +196,12 @@ def apply_answer(form: dict, field: str, value, user_words: str, groups: list[st
         if _is_none_word(text):
             form[field] = "not_sure"
         else:
-            m = re.search(r"\d+(?:\.\d+)?", text)
+            m = re.search(r"\d*\.?\d+(?:[eE][-+]?\d+)?", text.replace(",", ""))
             if not m or float(m.group()) <= 0:
-                return "volume_cm3 must be a positive number in cm3, or 'not_sure'"
-            form[field] = float(m.group())
+                return "volume_cm3 must be a positive number in m3, or 'not_sure'"
+            # Entered in m3 (a unit written in the answer wins); stored in cm3, which the cost formula uses
+            unit = text.lower()
+            form[field] = float(m.group()) * (1.0 if "cm" in unit else 0.001 if "mm" in unit else 1e6)
 
     elif field == "min_limits":
         if isinstance(raw, dict):
@@ -259,6 +279,7 @@ def to_recommend_payload(form: dict, price_overrides: dict | None = None, top_n:
         "min_limits": form.get("min_limits") if isinstance(form.get("min_limits"), dict) else {},
         "include": form.get("include") if isinstance(form.get("include"), list) else [],
         "avoid": form.get("avoid") if isinstance(form.get("avoid"), list) else [],
+        "part_notes": form.get("notes") or [],
         "price_overrides": price_overrides or {},
         "top_n": top_n,
     }

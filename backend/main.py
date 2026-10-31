@@ -27,7 +27,7 @@ from backend.chat.llm import chat_events, chat_turn, group_labels, question_spec
 from backend.engine.options import options_payload  # noqa: E402
 from backend.engine.recommend import load_engine, recommend  # noqa: E402
 
-app = FastAPI(title="Matify: AI-based material selection", version="0.3")
+app = FastAPI(title="Sigma: AI-based material selection", version="0.3")
 app.add_middleware(  # React dev server (Vite) runs on port 5173
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -50,6 +50,7 @@ class RecommendRequest(BaseModel):
     min_limits: dict[str, float] = Field(default_factory=dict, examples=[{"Sy": 400}])
     include: list[str] = Field(default_factory=list, examples=[[]])
     avoid: list[str] = Field(default_factory=list, examples=[[]])
+    part_notes: list[str] = Field(default_factory=list, examples=[[]])  # cautions from the chat, shown with the results
     price_overrides: dict[str, float] = Field(default_factory=dict, examples=[{}])
     top_n: int = Field(10, ge=1, le=50)
 

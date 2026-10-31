@@ -28,6 +28,7 @@ from backend.engine.design import COMMON_INPUTS, FUNCTIONS, function_options
 from backend.engine.options import FIELDS, MIN_LIMIT_FIELDS, property_options
 
 from .form_state import FIELD_ORDER, OPTIONAL, REQUIRED, apply_answer, missing_fields, normalise_form
+from .part_detail import answer_detail, apply_step, detail_prompt, detail_spec, finish, needs_details
 
 BASE_URL = "https://api.groq.com/openai/v1"
 MODEL = "openai/gpt-oss-120b"
@@ -38,14 +39,14 @@ FAMILY_LABELS = {"ferrous": "Steels and cast irons", "aluminium": "Aluminium all
 
 QUESTION_HINT = {
     "part_name": "what the part is",
-    "function": "what the part does mechanically, i.e. how it is loaded (pulled, bent, twisted, pressurised, a spring or a gear)",
+    "function": "what the part does mechanically, i.e. how it is loaded (pulled, bent, twisted, pressurised, a spring, a gear, or a mix of loads)",
     "design_inputs": "the loads and main dimensions needed for the design calculation (they can fill them in the card below)",
     "properties": "which properties the part needs (they can tick suggestions in the card below)",
     "primary_property": "which of the chosen properties matters most",
     "environment": "where it works (indoors, outdoors, water, chemicals, heat)",
     "weight_priority": "how important low weight is",
     "cost_priority": "how important low cost is",
-    "volume_cm3": "the approximate part volume in cm3 (optional, used for cost per part)",
+    "volume_cm3": "the approximate part volume in m3 (optional, used for cost per part)",
     "min_limits": "any minimum strength/elongation or maximum density limits (optional)",
     "include": "any material families they must use (optional)",
     "avoid": "any material families they want to avoid (optional)",
@@ -115,12 +116,13 @@ def question_spec(field: str | None, groups: dict, form: dict, classes: list[str
     elif field == "function":
         spec.update(type="single", options=[{k: o[k] for k in ("value", "label", "description", "examples")}
                                             for o in function_options()],
-                    subtitle="Every part is designed as one of these machine elements")
+                    subtitle="Pick the closest match, or General part for anything else")
     elif field == "design_inputs":
         fn = form.get("function")
         f = FUNCTIONS.get(fn)
-        spec.update(type="design", function=fn, options=(f["inputs"] + COMMON_INPUTS) if f else [],
-                    preselected=form.get("design_draft") or {},
+        hints = form.get("hints") or {}
+        spec.update(type="design", function=fn, preselected=form.get("design_draft") or {},
+                    options=[{**i, "hint": hints.get(i["key"], i.get("hint"))} for i in f["inputs"] + COMMON_INPUTS] if f else [],
                     subtitle=f"{f['load_mode']} · used to calculate the required strength" if f else "")
     elif field == "properties":
         # options = the classes the trained model predicts (not a hand-made list)
@@ -136,7 +138,7 @@ def question_spec(field: str | None, groups: dict, form: dict, classes: list[str
         spec.update(type="single", options=[{"value": k, "label": v["label"]}
                                             for k, v in FIELDS[field].items() if k != "not_sure"])
     elif field == "volume_cm3":
-        spec.update(type="number", unit="cm³", hint="Used to show cost per part", options=[])
+        spec.update(type="number", unit="m³", hint="Used to show cost per part", options=[])
     elif field == "min_limits":
         spec.update(type="limits", options=[{"value": k, "label": MIN_LIMIT_FIELDS[k], "unit": LIMIT_UNITS[k],
                                              "hint": LIMIT_HINTS[k]} for k in MIN_LIMIT_FIELDS])
@@ -144,7 +146,17 @@ def question_spec(field: str | None, groups: dict, form: dict, classes: list[str
         other = form.get("avoid" if field == "include" else "include") or []
         spec.update(type="multi", options=[{"value": k, "label": v, "disabled": k in other}
                                            for k, v in groups.items()])
+    info = (form.get("guide") or {}).get(field)
+    if info:
+        spec["info"] = info
     return spec
+
+
+def _next_question(form: dict, groups: dict, classes: list[str]) -> dict | None:
+    if form.get("pending_detail"):
+        return detail_spec(form)
+    missing = missing_fields(form)
+    return question_spec(missing[0] if missing else None, groups, form, classes)
 
 
 def _options_text(groups: dict, classes: list[str]) -> str:
@@ -154,6 +166,7 @@ def _options_text(groups: dict, classes: list[str]) -> str:
     for k, f in FUNCTIONS.items():
         keys = ", ".join(f"{i['key']}" + (f" [{'/'.join(o['value'] for o in i['options'])}]" if i.get("options")
                                          else f" ({i['unit']})" if i.get("unit") else "")
+                         + (f" only if {i['show_if']['key']}={'/'.join(i['show_if']['in'])}" if i.get("show_if") else "")
                          for i in f["inputs"] + COMMON_INPUTS)
         lines.append(f"  design_inputs for {k}: {keys}")
     lines.append("- design_inputs: 'key=value' pairs for the chosen function, e.g. 'P_kW=10, N_rpm=960, d_mm=30'. "
@@ -165,7 +178,8 @@ def _options_text(groups: dict, classes: list[str]) -> str:
         opts = "; ".join(f"{k} = {v['label']}" for k, v in FIELDS[f].items())
         lines.append(f"- {f}: {opts}")
     lines.append("- part_name: free text, e.g. 'gear shaft'")
-    lines.append("- volume_cm3 (optional): number in cm3, or not_sure")
+    lines.append("- volume_cm3 (optional): number in m3 despite the field name, keeping any other unit the user "
+                 "wrote (e.g. '0.00012' or '120 cm3'), or not_sure")
     lims = ", ".join(f"{k} = {v}" for k, v in MIN_LIMIT_FIELDS.items())
     lines.append(f"- min_limits (optional): e.g. 'Sy=400, Ro_max=3000', or none. Keys: {lims}")
     grp = "; ".join(f"{k} = {v}" for k, v in groups.items())
@@ -180,7 +194,7 @@ def _system_prompt(form: dict, groups: dict, classes: list[str], button_answer: 
     ask = (f"Next, ask ONE short question about {QUESTION_HINT[nxt]} (field '{nxt}')."
            if nxt else "Nothing is missing. Say in one short sentence that everything is noted and they can "
                        "review the summary card and press Confirm. Do not list the answers.")
-    return f"""You are Matify's friendly requirements assistant for choosing a material for a mechanical part.
+    return f"""You are Sigma's friendly requirements assistant for choosing a material for a mechanical part.
 Your only job is to fill a fixed form by calling record_answer, then ask the next question.
 
 How to talk:
@@ -192,6 +206,8 @@ How to talk:
 
 Recording rules:
 - First record every answer the user gave in their latest message (one record_answer call per field).
+- part_name: value is the name of the part (e.g. "connecting rod"). After recording it, do not ask anything yourself:
+  the next question is prepared separately.
 - Record only what the user clearly said. Never assume. If unclear, ask a short clarifying question.
 - "Not sure" / "don't know" -> value not_sure. Optional fields can be "none".
 - Map the user's words to the allowed values exactly (e.g. "Outdoors / humid" -> outdoor_humid).
@@ -199,7 +215,9 @@ Recording rules:
   describes how it is loaded (bolt -> tie, bracket/holder/lever -> beam, axle -> shaft, pipe/tank -> pressure_vessel,
   coil spring -> spring, gear/pinion -> gear). If the part clearly matches, record function and say in a few words
   how it is loaded (e.g. "A gear tooth bends at its root, so I'll design it as a spur gear."). If the part is vague
-  (e.g. "holder", "plate", "connector"), ask how the load acts on it before recording function.
+  (e.g. "holder", "plate", "connector"), ask how the load acts on it before recording function. If no standard
+  element fits, or several loads act together (connecting rod, hook, clevis, crank arm, housing), use general: ask
+  for the size of its most stressed section and the loads on it, or the peak stress if they already know it.
 - Design inputs: record any numbers the user gives (power, speed, load, sizes) as design_inputs pairs with the
   exact keys; convert units (50 kg -> F_N=490, 20 bar -> p_MPa=2). Never invent numbers.
 - Properties: after the user describes the part, call record_answer(field="suggested_properties") with the
@@ -224,7 +242,7 @@ def _button_prompt(form: dict, answered: dict) -> str:
     nxt = missing[0] if missing else None
     ask = (f"Then ask ONE short question about {QUESTION_HINT[nxt]}. Ask about nothing else."
            if nxt else "Then say that everything is noted and they can review the summary card and press Confirm.")
-    return f"""You are Matify's friendly requirements assistant for choosing a material for a mechanical part.
+    return f"""You are Sigma's friendly requirements assistant for choosing a material for a mechanical part.
 The user just answered "{answered.get('label') or answered.get('value')}" for {QUESTION_HINT.get(answered.get('field'), 'the last question')}.
 That answer is saved.
 Write one or two short, warm sentences in plain text: briefly acknowledge it, {ask[0].lower() + ask[1:]}
@@ -256,6 +274,27 @@ class _ToolTextFilter:
         out = TOOL_TEXT.sub(" ", self.buf)
         self.buf = ""
         return "" if self.KEY in out else out
+
+
+def _ask_json(client, model: str, extra: dict, prompt: str) -> dict | None:
+    """One JSON reply from the model, or None if it cannot be parsed."""
+    try:
+        res = client.chat.completions.create(
+            model=model, messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "Return the JSON."}],
+            temperature=0.2, max_tokens=2500, response_format={"type": "json_object"}, **extra,
+        )
+        return json.loads(res.choices[0].message.content or "")
+    except Exception:
+        return None
+
+
+def _part_step(client, model: str, extra: dict, form: dict, group_keys: list[str], classes: list[str]) -> str:
+    """Next part-specific question (or the wrap-up). Falls back to the fixed form if the model fails twice."""
+    for _ in range(2):
+        text = apply_step(form, _ask_json(client, model, extra, detail_prompt(form, classes)), group_keys, classes)
+        if text is not None:
+            return text
+    return finish(form, {}, group_keys, classes)
 
 
 def _apply_tool_calls(tool_calls: list[dict], form: dict, group_keys: list[str], recorded: list, errors: list, msgs: list,
@@ -302,7 +341,15 @@ def chat_events(messages: list[dict], form: dict | None, price_categories: dict,
     groups = group_labels(price_categories)
     group_keys = list(groups)
     button = False
-    if direct_answer and direct_answer.get("field"):
+    detail_turn = False  # this turn answered a part-specific question: no form-filling pass needed
+    if form["pending_detail"] and (not direct_answer or direct_answer.get("field") == "part_detail"):
+        d = direct_answer or {}
+        typed = next((str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"), "")
+        answer_detail(form, d.get("value"), d.get("label") or typed, group_keys, classes)
+        detail_turn = True
+        yield {"type": "recorded", "items": [{"field": "part_detail", "value": form["details"][-1]["answer"],
+                                              "user_words": form["details"][-1]["answer"]}]}
+    elif direct_answer and direct_answer.get("field"):
         err = apply_answer(form, direct_answer["field"], direct_answer.get("value"),
                            direct_answer.get("label", ""), group_keys, classes)
         if err:
@@ -311,7 +358,7 @@ def chat_events(messages: list[dict], form: dict | None, price_categories: dict,
             yield {"type": "error", "message": err + " Please answer this question again."}
             yield {"type": "done", "reply": "", "form": form, "recorded": [], "errors": [err],
                    "missing": missing, "complete": not missing,
-                   "question": question_spec(missing[0] if missing else None, groups, form, classes)}
+                   "question": _next_question(form, groups, classes)}
             return
         button = True
         yield {"type": "recorded", "items": [{"field": direct_answer["field"],
@@ -330,32 +377,39 @@ def chat_events(messages: list[dict], form: dict | None, price_categories: dict,
         else:
             msgs = [{"role": "system", "content": _system_prompt(form, groups, classes)}] + history
 
-        for _ in range(MAX_TOOL_ROUNDS):
+        retries = 0
+        for _ in range(0 if detail_turn else MAX_TOOL_ROUNDS):
             tool_args = {} if button else {"tools": [RECORD_TOOL], "tool_choice": "auto"}
-            stream = client.chat.completions.create(
-                model=model, messages=msgs, temperature=0.3, max_tokens=2000, stream=True,
-                **tool_args, **extra,
-            )
             calls: dict[int, dict] = {}
             text = ""
             clean = _ToolTextFilter()
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                if getattr(delta, "content", None):
-                    out = clean.feed(delta.content)
-                    if out:
-                        text += out
-                        yield {"type": "token", "text": out}
-                for tc in getattr(delta, "tool_calls", None) or []:
-                    c = calls.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
-                    if tc.id:
-                        c["id"] = tc.id
-                    if tc.function and tc.function.name:
-                        c["name"] += tc.function.name
-                    if tc.function and tc.function.arguments:
-                        c["arguments"] += tc.function.arguments
+            try:
+                stream = client.chat.completions.create(
+                    model=model, messages=msgs, temperature=0.3, max_tokens=2000, stream=True,
+                    **tool_args, **extra,
+                )
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if getattr(delta, "content", None):
+                        out = clean.feed(delta.content)
+                        if out:
+                            text += out
+                            yield {"type": "token", "text": out}
+                    for tc in getattr(delta, "tool_calls", None) or []:
+                        c = calls.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
+                        if tc.id:
+                            c["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            c["name"] += tc.function.name
+                        if tc.function and tc.function.arguments:
+                            c["arguments"] += tc.function.arguments
+            except Exception as e:  # the provider rejects a malformed tool call now and then: try again
+                if "tool call" not in str(e).lower() or text or retries >= 2:
+                    raise
+                retries += 1
+                continue
             out = clean.flush()
             if out:
                 text += out
@@ -367,8 +421,16 @@ def chat_events(messages: list[dict], form: dict | None, price_categories: dict,
             items = _apply_tool_calls([calls[i] for i in sorted(calls)], form, group_keys, recorded, errors, msgs, classes)
             if items:
                 yield {"type": "recorded", "items": items}
+            if needs_details(form):
+                break
             # refresh the instructions so the model asks about the new next field
             msgs[0] = {"role": "system", "content": _system_prompt(form, groups, classes)}
+
+        if needs_details(form):
+            text = _part_step(client, model, extra, form, group_keys, classes)
+            if text:
+                reply += text
+                yield {"type": "token", "text": text}
 
         if not reply.strip():
             missing = missing_fields(form)
@@ -383,7 +445,7 @@ def chat_events(messages: list[dict], form: dict | None, price_categories: dict,
     missing = missing_fields(form)
     yield {"type": "done", "reply": reply.strip(), "form": form, "recorded": recorded, "errors": errors,
            "missing": missing, "complete": not missing,
-           "question": question_spec(missing[0] if missing else None, groups, form, classes)}
+           "question": _next_question(form, groups, classes)}
 
 
 def chat_turn(messages: list[dict], form: dict | None, price_categories: dict, direct_answer: dict | None = None,

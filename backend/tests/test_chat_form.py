@@ -21,6 +21,13 @@ def test_valid_answers_recorded():
     assert apply_answer(f, "volume_cm3", "not sure", "", GROUPS) is None and f["volume_cm3"] == "not_sure"
 
 
+def test_volume_is_entered_in_m3_and_stored_in_cm3():
+    for answer, cm3 in (("0.00012", 120), ("1.2e-4", 120), ("1e-7", 0.1), ("120 cm3", 120), ("120,000 mm3", 120)):
+        f = empty_form()
+        assert apply_answer(f, "volume_cm3", answer, "", GROUPS) is None
+        assert abs(f["volume_cm3"] - cm3) < 1e-9
+
+
 def test_invalid_values_rejected():
     f = empty_form()
     assert apply_answer(f, "environment", "space", "", GROUPS) is not None
