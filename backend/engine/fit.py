@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-ML_WEIGHT = 0.6   # suitability = 60% trained model + 40% engineering fit
+ML_WEIGHT = 0.8   # suitability = 80% trained model + 20% engineering fit (100% put brass first for springs)
 HB_PER_SU = 1 / 3.45  # Brinell hardness estimated as Su/3.45 where the dataset has no hardness
 HARDENED = r"quench|temper|harden|heat treat|improved|nitrid|carburi"  # "Improved" = Q+T in GOST data
 
@@ -42,7 +42,7 @@ USAGE = {
     "rod": {"normal": ("alloy_steel",),
             "unusual": ("free_cutting_steel", "spring_steel", "grey_cast_iron", *STAINLESS, *COPPER)},
     "spring": {"normal": ("spring_steel",),
-               "unusual": ("cast_steel", "free_cutting_steel", *IRON, *LIGHT)},
+               "unusual": ("brass", "cast_steel", "free_cutting_steel", *IRON, *LIGHT)},
     "vessel": {"normal": ("carbon_steel", "alloy_steel", "stainless_mo", "stainless_austenitic"),
                "unusual": ("free_cutting_steel", "spring_steel", *IRON, "magnesium_alloy", "magnesium_re")},
     "beam": {"normal": ("carbon_steel", "aluminium_wrought", "aluminium_high_strength"),
