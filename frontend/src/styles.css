@@ -1,4 +1,4 @@
-/* ===================== Matify · black theme ===================== */
+/* ===================== Sigma · black theme ===================== */
 :root {
   --bg: #000000;
   --panel: #0d0d0d;
@@ -142,6 +142,7 @@ a { color: var(--accent-2); }
 .qhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 2px 4px 10px; }
 .qtitle { font-size: 16px; font-weight: 600; }
 .qsub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.qinfo { margin: 0 4px 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 .qmeta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .qclose { background: none; border: 0; color: var(--muted); font-size: 14px; padding: 2px 6px; border-radius: 6px; }
 .qclose:hover { background: var(--panel-3); color: var(--ink); }
@@ -614,3 +615,29 @@ a { color: var(--accent-2); }
 .results .results-head h2 { line-height: 1; }
 .results .results-head > div { display: flex; align-items: center; }
 .results .results-head .row button { border-radius: 0; }
+
+/* ---- design process (Ashby): form step, results panel, design check, chart line ---- */
+.design-step { border: 1px dashed var(--line); border-radius: var(--radius); padding: 14px; margin: 6px 0 16px; display: flex; flex-direction: column; gap: 10px; }
+.step-tag { font-size: 11px; color: var(--accent); letter-spacing: .06em; }
+.qfield.wide { grid-column: 1 / -1; }
+.qfield select { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
+.design-panel { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 18px; margin: 0 0 18px; }
+.dp-head span { color: var(--accent); letter-spacing: .06em; }
+.dp-head h3 { margin: 4px 0 14px; }
+.dp-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.dp-step { display: flex; gap: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
+.dp-step h4 { margin: 2px 0 8px; }
+.dp-step p { margin: 6px 0; }
+.dp-num { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 700; }
+.dp-step dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; font-size: 13px; }
+.dp-step dt { color: var(--muted); }
+.dp-step dd { margin: 0; }
+.dp-calc { margin: 0 0 8px; padding-left: 18px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.dp-req { display: flex; flex-wrap: wrap; gap: 6px; }
+.dcheck { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.dcheck-row { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.dcheck-row.ok span:first-child { color: var(--ok); }
+.dcheck-row.bad span:first-child { color: var(--bad); }
+.ash-index { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 8 5; }
+.ash-index-text { fill: var(--accent); font: 12px var(--font-mono); }
+.ash-screen { fill: var(--bad-soft); }

@@ -149,7 +149,7 @@ export default function App({ start, onStartConsumed, onHome }) {
         <div className="brand" onClick={onHome} title="Home">
           <Logo size={32} />
           <div>
-            <h1 className="wordmark">MATIFY</h1>
+            <h1 className="wordmark">SIGMA</h1>
             <p>Material selection engine</p>
           </div>
         </div>

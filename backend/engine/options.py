@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .design import FUNCTIONS, function_options
+
 DESCRIPTIONS_PATH = Path(__file__).resolve().parents[1] / "data" / "class_descriptions.json"
 
 PRIORITY_WEIGHT = {"critical": 3, "important": 2, "not_important": 0, "not_sure": 1}
@@ -76,8 +78,12 @@ def options_payload(price_categories: dict, classes: list[str]) -> dict:
     """What GET /api/options returns (used by the React form and the chat)."""
     fields = {f: [{"value": k, "label": v["label"]} for k, v in opts.items()] for f, opts in FIELDS.items()}
     fields["properties"] = property_options(classes)
+    fields["function"] = function_options()
     return {
         "fields": fields,
+        "design_functions": {k: {"classes": v["classes"], "load_mode": v["load_mode"],
+                                 "index": v["index"]["text"], "free_variable": v["free_variable"]}
+                             for k, v in FUNCTIONS.items()},
         "multi_select": ["properties"],
         "min_limits": MIN_LIMIT_FIELDS,
         "families": FAMILIES,

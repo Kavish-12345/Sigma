@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import ResultCard from "./ResultCard.jsx";
 import AshbyChart from "./AshbyChart.jsx";
+import DesignPanel from "./DesignPanel.jsx";
 import Datasheet, { CompareTable } from "./Datasheet.jsx";
 import { groupLabel } from "../labels.js";
 
@@ -54,6 +55,21 @@ export default function Results({ result, summary, options, form, busy, priceOve
       </div>
       )}
 
+      <DesignPanel design={result.design} result={result} onChart={summary ? () => setShowChart(true) : null} />
+
+      {result.form?.part_notes?.length > 0 && (
+        <div className="explain-strip">
+          <div>
+            <strong>Check for this part</strong>
+            <ul className="muted small">
+              {result.form.part_notes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {result.message && <div className="error">{result.message}</div>}
       {busy && <div className="muted">Re-ranking…</div>}
 
@@ -84,8 +100,18 @@ export default function Results({ result, summary, options, form, busy, priceOve
 
       {sheet && <Datasheet r={sheet} summary={summary} partName={form.part_name} onClose={() => setSheet(null)} />}
       {showChart && (
-        <ChartModal onClose={() => setShowChart(false)}>
-          <AshbyChart materials={summary.materials} highlight={result.results.map((r) => r.material)} />
+        <ChartModal onClose={() => setShowChart(false)} design={result.design}>
+          <AshbyChart
+            materials={summary.materials}
+            highlight={result.results.map((r) => r.material)}
+            yKey={result.design && result.design.index.prop === "Sy" && !result.design.index.use_E ? "Sy" : "Su"}
+            indexLine={
+              result.design && !result.design.index.use_E
+                ? { n: result.design.index.n, text: result.design.index.mass_text, through: result.results[0] }
+                : null
+            }
+            limit={result.design?.requirements}
+          />
         </ChartModal>
       )}
       {showCompare && <CompareTable items={compareItems} summary={summary} onClose={() => setShowCompare(false)} />}
@@ -94,7 +120,7 @@ export default function Results({ result, summary, options, form, busy, priceOve
 }
 
 // shortlist on the strength-vs-density chart, in a popup
-function ChartModal({ onClose, children }) {
+function ChartModal({ onClose, children, design }) {
   useEffect(() => {
     const k = (e) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", k);
@@ -106,8 +132,12 @@ function ChartModal({ onClose, children }) {
         <div className="why-head">
           <div>
             <span className="muted small mono">PROPERTY CHART</span>
-            <h3>Your shortlist on the property chart</h3>
-            <p className="muted small">Recommended materials (orange) among every material in the dataset.</p>
+            <h3>{design ? "Ashby chart with selection line" : "Your shortlist on the property chart"}</h3>
+            <p className="muted small">
+              {design
+                ? `Dashed line: constant material index M = ${design.index.mass_text} through #1. Materials above the line perform better for this function; the shaded band is removed by the design calculation.`
+                : "Recommended materials (orange) among every material in the dataset."}
+            </p>
           </div>
           <button className="qclose" onClick={onClose} aria-label="Close">✕</button>
         </div>

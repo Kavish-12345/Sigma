@@ -1,4 +1,5 @@
 import { groupLabel } from "../labels.js";
+import { designComplete, designInputs, inputShown } from "../api.js";
 
 // Plain form that fills exactly the same fields as the chat and calls the same /api/recommend.
 export default function NoAIForm({ options, form, setForm, onReview }) {
@@ -19,6 +20,27 @@ export default function NoAIForm({ options, form, setForm, onReview }) {
   }
   const chosen = (form.properties || []).filter((x) => x !== "not_sure");
 
+  // Design step: function -> its input fields. design_inputs is set once every required value is filled.
+  const inputs = designInputs(options, form.function);
+  const draft = form.design_draft || {};
+  function chooseFunction(fn) {
+    if (!fn) return setForm({ ...form, function: null, design_inputs: null, design_draft: {} });
+    if (fn === "not_sure") return setForm({ ...form, function: "not_sure", design_inputs: "not_sure", design_draft: {} });
+    const defaults = {};
+    designInputs(options, fn).forEach((i) => "default" in i && (defaults[i.key] = i.default));
+    setForm({ ...form, function: fn, design_inputs: null, design_draft: defaults });
+  }
+  function setDesign(k, v) {
+    const next = { ...draft, [k]: v };
+    if (v === "") delete next[k];
+    const value = {};
+    Object.entries(next).forEach(([key, val]) => {
+      const spec = inputs.find((i) => i.key === key);
+      value[key] = spec?.type === "select" ? val : Number(val);
+    });
+    setForm({ ...form, design_draft: next, design_inputs: designComplete(inputs, next) ? value : null });
+  }
+
   function setLimit(k, v) {
     const lim = { ...(form.min_limits || {}) };
     if (v === "") delete lim[k];
@@ -33,8 +55,11 @@ export default function NoAIForm({ options, form, setForm, onReview }) {
 
   // Optional fields left blank count as "none" so the summary can be confirmed.
   function review() {
+    const skipped = form.function && !form.design_inputs; // values left blank: go on without the calculation
     setForm({
       ...form,
+      design_inputs: skipped ? "not_sure" : form.design_inputs,
+      notes: skipped ? ["Stress calculation skipped: not all loads and sizes were entered."] : form.notes,
       volume_cm3: form.volume_cm3 ?? "not_sure",
       min_limits: form.min_limits ?? {},
       include: form.include ?? [],
@@ -60,15 +85,74 @@ export default function NoAIForm({ options, form, setForm, onReview }) {
   return (
     <div className="noai">
       <h2>Requirements form</h2>
-      <p className="muted">Same questions as the chat. Choose “Not sure” whenever you don't know.</p>
+      <p className="muted">
+        Same questions as the chat, following material selection in the design process: translation → screening → ranking.
+        Choose “Not sure” whenever you don't know.
+      </p>
 
       <label className="field">
         <span>Part name</span>
         <input value={form.part_name || ""} onChange={(e) => set("part_name", e.target.value || null)} placeholder="e.g. Gear shaft" />
       </label>
 
+      <div className="design-step">
+        <div className="step-tag mono">STEP 1 · TRANSLATION + DESIGN CALCULATION</div>
+        <label className="field">
+          <span>What does the part do? (how is it loaded)</span>
+          <select value={form.function || ""} onChange={(e) => chooseFunction(e.target.value)}>
+            <option value="">Choose…</option>
+            {options.fields.function.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+            <option value="not_sure">Not sure (skip the design calculation)</option>
+          </select>
+          {form.function && form.function !== "not_sure" && (
+            <small className="muted">
+              {options.fields.function.find((o) => o.value === form.function)?.description} · e.g.{" "}
+              {options.fields.function.find((o) => o.value === form.function)?.examples}
+            </small>
+          )}
+        </label>
+        {inputs.length > 0 && (
+          <div className="grid2">
+            {inputs.filter((i) => inputShown(i, draft)).map((i) =>
+              i.type === "select" ? (
+                <label className="field" key={i.key}>
+                  <span>{i.label}</span>
+                  <select value={draft[i.key] ?? i.default} onChange={(e) => setDesign(i.key, e.target.value)}>
+                    {i.options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <label className="field" key={i.key}>
+                  <span>
+                    {i.label}
+                    {i.unit ? ` (${i.unit})` : ""}
+                    {i.optional ? " · optional" : ""}
+                  </span>
+                  <input type="number" min="0" step="any" value={draft[i.key] ?? ""} placeholder={i.hint}
+                    onChange={(e) => setDesign(i.key, e.target.value)} />
+                </label>
+              )
+            )}
+          </div>
+        )}
+        {inputs.length > 0 && !form.design_inputs && <p className="muted small">Fill the values to run the design calculation. If you leave them blank, it is skipped.</p>}
+      </div>
+
       <div className="field">
         <span>Which properties does the part need? (choose one or more)</span>
+        {form.function && options.design_functions?.[form.function] && (
+          <small className="muted">
+            Typical for this function: {options.design_functions[form.function].classes.join(", ")}
+          </small>
+        )}
         <div className="prop-list">
           {options.fields.properties.map((o) => {
             const on = form.properties?.includes(o.value);
@@ -115,13 +199,14 @@ export default function NoAIForm({ options, form, setForm, onReview }) {
         {select("weight_priority", "How important is low weight?")}
         {select("cost_priority", "How important is low cost?")}
         <label className="field">
-          <span>Part volume (cm³, optional)</span>
+          <span>Part volume (m³, optional)</span>
           <input
             type="number"
             min="0"
-            value={typeof form.volume_cm3 === "number" ? form.volume_cm3 : ""}
-            onChange={(e) => set("volume_cm3", e.target.value ? Number(e.target.value) : null)}
-            placeholder="for cost per part"
+            step="any"
+            value={typeof form.volume_cm3 === "number" ? Number((form.volume_cm3 / 1e6).toPrecision(6)) : ""}
+            onChange={(e) => set("volume_cm3", e.target.value ? Number(e.target.value) * 1e6 : null)}
+            placeholder="e.g. 0.00012, for cost per part"
           />
         </label>
       </div>

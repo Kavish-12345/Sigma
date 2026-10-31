@@ -50,6 +50,25 @@ export default function ResultCard({ r, onOverride, onDatasheet, onCompare, comp
         <strong>{r.suitability_pct.toFixed(0)}%</strong>
       </div>
 
+      {r.design_check && (
+        <div className="dcheck">
+          <span className="muted small">Design check</span>
+          {r.design_check.map((c) => (
+            <div key={c.name} className={`dcheck-row ${c.ok ? "ok" : "bad"}`}>
+              <span>{c.ok ? "✔" : "✖"} {c.name}</span>
+              <span className="mono">
+                {c.prop} {c.actual.toLocaleString()} vs {c.required.toLocaleString()} MPa
+                {c.fos != null ? ` · FoS ${c.fos}` : ` · ${c.margin}×`}
+              </span>
+            </div>
+          ))}
+          <div className="dcheck-row">
+            <span>Material index</span>
+            <span className="mono">{r.index_rel_pct.toFixed(0)}% of best</span>
+          </div>
+        </div>
+      )}
+
       <div className="cost">
         <div>
           <span className="muted small">Estimated material cost</span>
@@ -92,6 +111,19 @@ export default function ResultCard({ r, onOverride, onDatasheet, onCompare, comp
 
       {open && (
         <WhyModal r={r} onClose={() => setOpen(false)}>
+          {r.design_check && (
+            <>
+              <h4>Design check (actual factor of safety)</h4>
+              <ul>
+                {r.design_check.map((c) => (
+                  <li key={c.name}>
+                    {c.name}: needs {c.prop} ≥ {c.required} MPa, this material has {c.actual} MPa
+                    {c.fos != null ? ` → actual FoS ${c.fos}` : ` → ${c.margin}× the required value`}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
           <h4>Model suitability per target class</h4>
           {Object.entries(r.class_suitability_pct).map(([c, p]) => (
             <div className="wbar" key={c}>

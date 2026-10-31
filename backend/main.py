@@ -27,7 +27,7 @@ from backend.chat.llm import chat_events, chat_turn, group_labels, question_spec
 from backend.engine.options import options_payload  # noqa: E402
 from backend.engine.recommend import load_engine, recommend  # noqa: E402
 
-app = FastAPI(title="Matify: AI-based material selection", version="0.3")
+app = FastAPI(title="Sigma: AI-based material selection", version="0.3")
 app.add_middleware(  # React dev server (Vite) runs on port 5173
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -38,6 +38,9 @@ app.add_middleware(  # React dev server (Vite) runs on port 5173
 
 class RecommendRequest(BaseModel):
     part_name: Optional[str] = Field(None, examples=["Gear shaft"])
+    function: str = Field("not_sure", examples=["shaft"])
+    design_inputs: Optional[dict[str, Any]] = Field(None, examples=[{"P_kW": 10, "N_rpm": 960, "M_Nm": 150,
+                                                                    "d_mm": 30, "fos": 2, "loading": "cyclic"}])
     properties: list[str] = Field(default_factory=lambda: ["not_sure"], examples=[["Heat-treatable", "Structural"]])
     primary_property: Optional[str] = Field(None, examples=["Heat-treatable"])
     environment: str = Field("not_sure", examples=["dry_indoor"])
@@ -47,6 +50,7 @@ class RecommendRequest(BaseModel):
     min_limits: dict[str, float] = Field(default_factory=dict, examples=[{"Sy": 400}])
     include: list[str] = Field(default_factory=list, examples=[[]])
     avoid: list[str] = Field(default_factory=list, examples=[[]])
+    part_notes: list[str] = Field(default_factory=list, examples=[[]])  # cautions from the chat, shown with the results
     price_overrides: dict[str, float] = Field(default_factory=dict, examples=[{}])
     top_n: int = Field(10, ge=1, le=50)
 
@@ -110,6 +114,7 @@ def post_recommend(req: RecommendRequest):
     if not res["results"] and res.get("problem_fields"):
         # tell the UI which question to ask again (the chat re-asks it)
         form = normalise_form(req.model_dump())
+        form["design_draft"] = dict(req.design_inputs or {})  # prefill the card with the previous values
         for f in res["problem_fields"]:
             form[f] = None
         eng = load_engine()
