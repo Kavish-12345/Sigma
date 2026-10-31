@@ -16,6 +16,8 @@ import re
 from backend.engine.design import COMMON_INPUTS, FUNCTIONS
 from backend.engine.fit import USAGE
 from backend.engine.options import FIELDS
+from backend.engine.pricing import load_prices
+from backend.engine.recommend import ENV_CLASS
 
 from .form_state import FIELD_ORDER, _is_none_word, apply_answer
 
@@ -28,7 +30,7 @@ TOPICS = ["the part's role in its machine", "how the load varies (steady, shock,
 ENV_SEVERITY = ["dry_indoor", "outdoor_humid", "high_temperature", "water_marine", "chemical"]
 INPUT_KEY = re.compile(r"\b\w+_(mm|kN|Nm|kW|rpm|MPa|N)\b")
 UNIT = re.compile(r"\b(kN|N·m|Nm|N|mm|cm|m|kW|W|rpm|MPa|GPa|kg)\b")
-CYCLE_FIGURE = re.compile(r"\s*(?:,|;|\bor\b|≈|~)*\s*[≈~]?\s*[\d.,]+\s*(?:[×x]\s*10\S*\s*)?\s*cycles?\b", re.IGNORECASE)
+CYCLE_FIGURE = re.compile(r"\s*(?:,|;|\bor\b|≈|~)*\s*[≈~]?\s*(?:[\d.,]+\s*[-–‑]\s*)?[\d.,]+\s*(?:[×x]\s*10\S*\s*)?\s*cycles?\b", re.IGNORECASE)
 
 
 def hint_fits(hint: str, unit: str) -> bool:
@@ -66,7 +68,8 @@ def _no_cycle_figure(text) -> str:
 
 
 def clean_question(raw, classes: list[str]) -> dict | None:
-    """A usable question has at least two options, and at least one must change the result."""
+    """A usable question has at least two options. An answer need not change a filter: the AI reads
+    every answer when it chooses the usual and unusual material groups."""
     if not isinstance(raw, dict):
         return None
     text = str(raw.get("question") or "").strip()[:160]
@@ -80,7 +83,7 @@ def clean_question(raw, classes: list[str]) -> dict | None:
         for word, field in (("weight", "weight_priority"), ("cost", "cost_priority")):
             if word not in text.lower():
                 o["effect"].pop(field, None)
-    if not text or len(opts) < 2 or not any(o["effect"] for o in opts):
+    if not text or len(opts) < 2:
         return None
     return {"question": text, "info": str(raw.get("info") or "").strip()[:400], "options": opts}
 
@@ -94,16 +97,19 @@ def detail_prompt(form: dict, classes: list[str]) -> str:
     answers = [{"question": d["question"], "answer": d["answer"]} for d in form["details"]]
     must_finish = asked >= MAX_QUESTIONS
     typed = form["details"][-1].get("typed") if form["details"] else False
+    groups = "; ".join(f"{k} = {c['label']}" for k, c in load_prices()["categories"].items())
     return f"""You are an experienced mechanical design engineer helping choose a material for one specific part.
 Part: {form['part_name']}
 What the user said so far: {json.dumps(form.get('user_words') or {}, ensure_ascii=False)}
 Questions already answered: {json.dumps(answers, ensure_ascii=False)}
-Topics to cover where they apply to this part: {'; '.join(TOPICS)}
+General topics, for at most two questions in total: {'; '.join(TOPICS)}
 
 {"You have asked enough. Return the finish JSON now." if must_finish else
- "Ask the single most useful question not answered yet, specific to this part. Use what the answers already "
- "revealed, skip topics that do not apply, and never repeat a question. Return the finish JSON only when the "
- "relevant topics are covered."}
+ "Ask the single most useful question not answered yet. At least four questions must be about features, failure "
+ "points or service conditions that belong to this kind of part, such as big-end bolts and bearing cap fit for a "
+ "connecting rod, keyways and shoulders for a shaft, or tooth finish and backlash for a gear. Test each question: if "
+ "it would make sense unchanged for a different part, it is general, so prefer one that would not. Use what the "
+ "answers already revealed, and ask at most one question per topic. Return the finish JSON when you have enough."}
 
 Return one JSON object. To ask a question:
 {{"done": false,
@@ -111,7 +117,7 @@ Return one JSON object. To ask a question:
   "question": "one short question",
   "options": [{{"label": "short answer", "description": "what it means, optional",
                "effect": {{"classes": [], "environment": "", "weight_priority": "", "cost_priority": "", "loading": "", "note": ""}}}}]}}
-Use 2 to 5 options. In each effect include only the keys that answer really changes:
+Use 2 to 5 options. In each effect include only the keys that answer really changes; it can be empty:
 - classes: from {json.dumps(classes)}
 - environment: one of {envs}
 - weight_priority, cost_priority: one of {prios}
@@ -125,9 +131,14 @@ To finish:
   "summary": "one or two sentences on how this part is loaded and what the design must guard against",
   "function": "the closest design element below",
   "part_type": "closest of {', '.join(USAGE)}, or other (rod = anything pushed and pulled along its length)",
+  "usual_groups": ["material groups engineers normally use for this exact part and service"],
+  "unusual_groups": ["every other group engineers would not choose here, even if it is strong enough"],
   "guide": {{"properties": "which properties matter for this part and why"}}}}
 Design elements:
 {fns}
+Material groups, for usual_groups and unusual_groups (use these exact keys, and judge them for this part in this
+service, using every answer so far):
+{groups}
 Use general when no standard element fits or several loads act together. A part loaded mainly along its length
 (connecting rod, pushrod, strut, link, piston rod) is never a beam: use tie for pure push or pull, and general when
 bending or other loads act too. Write the guide in plain sentences, never with input keys such as F_kN.
@@ -145,11 +156,14 @@ def hints_prompt(form: dict) -> str:
     f = FUNCTIONS[form["function"]]
     fields = "\n".join(f"{i['key']}: {i['label']} ({i.get('unit') or 'no unit'})" for i in f["inputs"] + COMMON_INPUTS
                        if i.get("type") != "select")
+    answers = "; ".join(f"{d['question']} {d['answer']}" for d in form["details"])
     return f"""Give typical real-world values for a {form['part_name']}.
+What the user told us: {answers}
 Fields:
 {fields}
 Return JSON: {{"hints": {{"field_key": "typical value or range, in that field's exact unit"}}}}. Keep each hint under 40
-characters. Include only fields where a typical value exists. No formulas, no materials. Output JSON only."""
+characters. The size of the machine is unknown, so give the range for a common small to medium example of this part,
+never a large industrial one. Include only fields where a typical value exists. No formulas, no materials. Output JSON only."""
 
 
 def set_hints(form: dict, data) -> None:
@@ -189,18 +203,35 @@ def answer_detail(form: dict, value, label: str, groups: list[str], classes: lis
     return entry
 
 
+def clean_groups(data: dict) -> dict | None:
+    """The AI's normal and unusual material groups: real groups only, and a group cannot be both."""
+    known = load_prices()["categories"]
+
+    def valid(key):
+        raw = data.get(key)
+        return [g for g in raw if isinstance(g, str) and g in known] if isinstance(raw, list) else []
+
+    normal = valid("usual_groups")
+    unusual = [g for g in valid("unusual_groups") if g not in normal]
+    return {"normal": normal, "unusual": unusual} if normal or unusual else None
+
+
 def finish(form: dict, data: dict, groups: list[str], classes: list[str]) -> str:
     """End of the questions: record the design element and keep the part-specific guidance for the cards."""
     form["details_done"], form["pending_detail"] = True, None
     kind = data.get("part_type")
     form["part_type"] = kind if isinstance(kind, str) and kind in USAGE else None
+    form["usage_groups"] = clean_groups(data)
+    need = ENV_CLASS.get(form.get("environment"))   # the service environment always suggests its class
+    if need in classes and need not in form["suggested"]:
+        form["suggested"] = [need] + form["suggested"]
     fn = data.get("function")
     if fn in FUNCTIONS and form.get("function") is None:
         draft = dict(form["design_draft"])   # recording the function clears the draft
         apply_answer(form, "function", fn, "", groups, classes)
         form["design_draft"] = draft
     guide = data.get("guide") if isinstance(data.get("guide"), dict) else {}
-    form["guide"] = {k: str(v).strip()[:300] for k, v in guide.items()
+    form["guide"] = {k: str(v).strip()[:700] for k, v in guide.items()
                      if k in FIELD_ORDER and k != "design_inputs" and v and not INPUT_KEY.search(str(v))}
     f = FUNCTIONS.get(form.get("function"))
     if f:  # written here from the real fields, so it can never ask for something the card does not have

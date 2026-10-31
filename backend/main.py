@@ -52,6 +52,7 @@ class RecommendRequest(BaseModel):
     avoid: list[str] = Field(default_factory=list, examples=[[]])
     part_notes: list[str] = Field(default_factory=list, examples=[[]])  # cautions from the chat, shown with the results
     part_type: Optional[str] = Field(None, examples=["rod"])  # from the chat, for General parts
+    usage_groups: Optional[dict[str, list[str]]] = None  # normal and unusual groups the AI chose for this part
     price_overrides: dict[str, float] = Field(default_factory=dict, examples=[{}])
     top_n: int = Field(5, ge=1, le=50)
 

@@ -23,7 +23,7 @@ REQUIRED = ["part_name", "function", "design_inputs", "properties", "primary_pro
 OPTIONAL = ["volume_cm3", "min_limits", "include", "avoid"]
 FIELD_ORDER = REQUIRED + OPTIONAL
 
-MAX_ANSWER = 2000  # longer text is cut before parsing: the patterns below get very slow on huge input
+MAX_ANSWER = 500  # longer text is cut before parsing: the patterns below get very slow on huge input
 _NONE_WORDS = {"not_sure", "not sure", "none", "no", "skip", "nothing", "na", "n/a", "no limits", "dont know", "don't know"}
 
 
@@ -39,6 +39,7 @@ def empty_form() -> dict:
     form["hints"] = {}  # typical values for the design inputs (guidance only, never filled in)
     form["notes"] = []  # engineering cautions from the answers, shown with the results
     form["part_type"] = None  # kind of part for a General part (see USAGE in fit.py)
+    form["usage_groups"] = None  # {"normal": [...], "unusual": [...]} chosen by the AI for this part
     return form
 
 
@@ -58,6 +59,7 @@ def normalise_form(form: dict | None) -> dict:
         base["hints"] = dict(form.get("hints") or {})
         base["notes"] = list(form.get("notes") or [])
         base["part_type"] = form.get("part_type")
+        base["usage_groups"] = form.get("usage_groups")
     return base
 
 
@@ -286,6 +288,7 @@ def to_recommend_payload(form: dict, price_overrides: dict | None = None, top_n:
         "avoid": form.get("avoid") if isinstance(form.get("avoid"), list) else [],
         "part_notes": form.get("notes") or [],
         "part_type": form.get("part_type"),
+        "usage_groups": form.get("usage_groups"),
         "price_overrides": price_overrides or {},
         "top_n": top_n,
     }
