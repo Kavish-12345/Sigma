@@ -6,8 +6,8 @@ Design layer: material selection in the design process (Ashby).
     3. Ranking      - material index (e.g. Sy^(2/3)/rho) as a TOPSIS criterion
     4. Supporting   - design check (actual factor of safety) on every result
 
-Every part is reduced to one of a few standard machine elements (its function).
-The formulas are the standard textbook ones (Bhandari / Shigley); assumptions are
+A part is designed as a standard machine element (its function), or as a general
+part: the loads on its critical section, combined with von Mises. The formulas are the standard textbook ones (Bhandari / Shigley); assumptions are
 stated in the calculation steps shown to the user. No LLM is involved here.
 """
 from __future__ import annotations
@@ -17,6 +17,10 @@ import math
 # Fatigue: endurance limit Se = 0.5 * Su * K, with K = combined surface and size
 # factor (machined surface, small part). A deliberately simple, stated assumption.
 SE_RATIO, MARIN_K = 0.5, 0.75
+
+
+class MissingInput(ValueError):
+    """A value the calculation needs was left blank (as opposed to a value that is wrong)."""
 
 COMMON_INPUTS = [
     {"key": "fos", "label": "Factor of safety", "unit": "", "hint": "e.g. 2", "default": 2.0},
@@ -122,6 +126,44 @@ FUNCTIONS = {
         "index": {"n": 1.0, "prop": "Sy", "text": "σy / ρ"},
         "always_cyclic": True,
     },
+    "general": {
+        "label": "General part (any shape, combined loads)",
+        "description": "Anything else: describe its most stressed section and the loads on it, or enter a known stress",
+        "examples": "connecting rod, hook, clevis, crank arm, housing, mounting plate",
+        "load_mode": "Combined loads (von Mises)",
+        "classes": ["Structural"],
+        # show_if: the field applies only to these sections; need_one: at least one of these is required
+        "inputs": [
+            {"key": "section", "label": "Most stressed section", "type": "select", "default": "solid_round",
+             "options": [{"value": "solid_round", "label": "Solid round"},
+                         {"value": "hollow_round", "label": "Hollow round / tube"},
+                         {"value": "rectangle", "label": "Rectangle / plate"},
+                         {"value": "known_stress", "label": "I already know the peak stress (hand calculation or FEA)"}]},
+            {"key": "d_mm", "label": "Outer diameter", "unit": "mm", "hint": "e.g. 25",
+             "show_if": {"key": "section", "in": ["solid_round", "hollow_round"]}},
+            {"key": "di_mm", "label": "Inner diameter", "unit": "mm", "hint": "e.g. 15",
+             "show_if": {"key": "section", "in": ["hollow_round"]}},
+            {"key": "b_mm", "label": "Section width b", "unit": "mm", "hint": "e.g. 20",
+             "show_if": {"key": "section", "in": ["rectangle"]}},
+            {"key": "h_mm", "label": "Section depth h (in the bending direction)", "unit": "mm", "hint": "e.g. 30",
+             "show_if": {"key": "section", "in": ["rectangle"]}},
+            {"key": "F_kN", "label": "Axial force", "unit": "kN", "hint": "0 if none, e.g. 20", "optional": True,
+             "need_one": True, "show_if": {"key": "section", "in": ["solid_round", "hollow_round", "rectangle"]}},
+            {"key": "V_kN", "label": "Shear force", "unit": "kN", "hint": "0 if none, e.g. 5", "optional": True,
+             "need_one": True, "show_if": {"key": "section", "in": ["solid_round", "hollow_round", "rectangle"]}},
+            {"key": "M_Nm", "label": "Bending moment", "unit": "N·m", "hint": "0 if none, e.g. 150", "optional": True,
+             "need_one": True, "show_if": {"key": "section", "in": ["solid_round", "hollow_round", "rectangle"]}},
+            {"key": "T_Nm", "label": "Torque", "unit": "N·m", "hint": "0 if none, e.g. 80", "optional": True,
+             "need_one": True, "show_if": {"key": "section", "in": ["solid_round", "hollow_round", "rectangle"]}},
+            {"key": "Kt", "label": "Stress concentration factor Kt", "unit": "", "default": 1.0, "optional": True,
+             "hint": "1 if none; holes and sharp fillets ≈ 2-3 (fatigue only)",
+             "show_if": {"key": "section", "in": ["solid_round", "hollow_round", "rectangle"]}},
+            {"key": "stress_MPa", "label": "Peak von Mises stress", "unit": "MPa", "hint": "e.g. 180",
+             "show_if": {"key": "section", "in": ["known_stress"]}},
+        ],
+        "free_variable": "Critical section size",
+        "index": {"n": 2 / 3, "prop": "Sy", "text": "σy^(2/3) / ρ"},
+    },
 }
 
 
@@ -133,7 +175,14 @@ def function_options() -> list[dict]:
 
 def required_inputs(function: str) -> list[str]:
     f = FUNCTIONS.get(function)
-    return [i["key"] for i in f["inputs"] if not i.get("optional") and i.get("type") != "select"] if f else []
+    return [i["key"] for i in f["inputs"]
+            if not i.get("optional") and i.get("type") != "select" and "show_if" not in i] if f else []
+
+
+def _shown(spec: dict, values: dict) -> bool:
+    """Does this input apply, given the select values chosen so far?"""
+    cond = spec.get("show_if")
+    return not cond or values.get(cond["key"]) in cond["in"]
 
 
 def clean_inputs(function: str, raw: dict) -> dict:
@@ -141,6 +190,8 @@ def clean_inputs(function: str, raw: dict) -> dict:
     f = FUNCTIONS[function]
     out = {}
     for spec in f["inputs"] + COMMON_INPUTS:
+        if not _shown(spec, out):
+            continue
         k = spec["key"]
         v = raw.get(k)
         if spec.get("type") == "select":
@@ -151,7 +202,7 @@ def clean_inputs(function: str, raw: dict) -> dict:
             if "default" in spec:
                 out[k] = spec["default"]
             elif not spec.get("optional"):
-                raise ValueError(f"{spec['label']} ({spec['unit']}) is missing")
+                raise MissingInput(f"{spec['label']} ({spec['unit']}) is missing")
             continue
         try:
             x = float(v)
@@ -162,6 +213,13 @@ def clean_inputs(function: str, raw: dict) -> dict:
         out[k] = x
     if out["fos"] < 1:
         raise ValueError("Factor of safety must be at least 1")
+    loads = [s for s in f["inputs"] if s.get("need_one") and _shown(s, out)]
+    if loads and not any(out.get(s["key"]) for s in loads):
+        raise MissingInput("Enter at least one load (" + ", ".join(s["label"].lower() for s in loads) + ")")
+    if out.get("di_mm", 0) >= out.get("d_mm", math.inf):
+        raise ValueError("Inner diameter must be smaller than the outer diameter")
+    if out.get("Kt", 1) < 1:
+        raise ValueError("Stress concentration factor must be at least 1")
     return out
 
 
@@ -172,6 +230,22 @@ def _r(x: float, d: int = 1) -> float:
 def _fatigue(sigma_a: float, fos: float) -> float:
     """Su needed so that Se = 0.5*K*Su >= FoS * alternating stress."""
     return fos * sigma_a / (SE_RATIO * MARIN_K)
+
+
+def _section(x: dict) -> tuple[float, float, float, float, str]:
+    """Area, bending modulus Z, torsion modulus Zt (τ = T/Zt), peak shear factor, formula text."""
+    if x["section"] == "rectangle":
+        b, h = x["b_mm"], x["h_mm"]
+        w, t = max(b, h), min(b, h)
+        return (b * h, b * h ** 2 / 6, w * t ** 2 / (3 + 1.8 * t / w), 1.5,
+                f"Rectangle {b:g} × {h:g} mm: A = bh, Z = bh²/6, Zt = wt²/(3 + 1.8t/w)")
+    d = x["d_mm"]
+    di = x.get("di_mm", 0.0) if x["section"] == "hollow_round" else 0.0
+    Z = math.pi * (d ** 4 - di ** 4) / (32 * d)
+    if di:
+        return (math.pi * (d ** 2 - di ** 2) / 4, Z, 2 * Z, 2.0,
+                f"Tube Ø{d:g}/Ø{di:g} mm: A = π(d²−di²)/4, Z = π(d⁴−di⁴)/(32d), Zt = 2Z")
+    return math.pi * d ** 2 / 4, Z, 2 * Z, 4 / 3, f"Solid round Ø{d:g} mm: A = πd²/4, Z = πd³/32, Zt = 2Z"
 
 
 def calculate(function: str, inputs: dict) -> dict:
@@ -295,6 +369,33 @@ def calculate(function: str, inputs: dict) -> dict:
         steps += [f"Static: Sy ≥ {fos:g} × {s:.1f} = {fos * s:.0f} MPa",
                   f"Teeth are loaded once per revolution (fatigue): Su ≥ {su:.0f} MPa",
                   "Teeth also rub → Wear-resistant / surface-hardenable materials preferred"]
+
+    elif function == "general":
+        Kt = x.get("Kt", 1.0)
+        axial = x.get("F_kN", 0.0) or 0.0
+        if x["section"] == "known_stress":
+            s = x["stress_MPa"]
+            steps.append(f"Peak von Mises stress entered directly: σ = {s:.1f} MPa")
+        else:
+            A, Z, Zt, kv, text = _section(x)
+            sn = axial * 1000 / A + (x.get("M_Nm", 0.0) or 0.0) * 1000 / Z
+            tau = (x.get("T_Nm", 0.0) or 0.0) * 1000 / Zt + kv * (x.get("V_kN", 0.0) or 0.0) * 1000 / A
+            s = math.sqrt(sn ** 2 + 3 * tau ** 2)
+            steps += [text + f"  →  A = {A:.1f} mm², Z = {Z:.0f} mm³, Zt = {Zt:.0f} mm³",
+                      f"Normal stress σ = F/A + M/Z = {sn:.1f} MPa",
+                      f"Shear stress τ = T/Zt + {kv:.2g}·V/A = {tau:.1f} MPa (peaks added, conservative)",
+                      f"Von Mises stress σv = √(σ² + 3τ²) = {s:.1f} MPa"]
+        need("Sy", fos * s, "Yielding (static)")
+        steps.append(f"Static: σ ≤ Sy/FoS  →  Sy ≥ {fos:g} × {s:.1f} = {fos * s:.0f} MPa")
+        if cyclic:
+            su = _fatigue(Kt * s, fos)
+            need("Su", su, "Fatigue")
+            steps.append(f"Fatigue (treated as fully reversed, conservative): Se = {SE_RATIO}·{MARIN_K}·Su ≥ "
+                         f"FoS·Kt·σ  →  Su ≥ {su:.0f} MPa")
+        if axial:
+            steps.append("Note: if the axial force is compressive on a slender part, check buckling separately")
+        steps.append("First estimate: valid only if these values describe the most stressed section. "
+                     "Confirm complex shapes with FEA or testing")
 
     if function == "shaft" and (x.get("M_Nm") or 0) > 0:
         cyclic = True   # rotating bending is always fully reversed
