@@ -1,4 +1,4 @@
-/* ===================== Matify · black theme ===================== */
+/* ===================== Sigma · black theme ===================== */
 :root {
   --bg: #000000;
   --panel: #0d0d0d;
@@ -142,6 +142,7 @@ a { color: var(--accent-2); }
 .qhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 2px 4px 10px; }
 .qtitle { font-size: 16px; font-weight: 600; }
 .qsub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.qinfo { margin: 0 4px 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 .qmeta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .qclose { background: none; border: 0; color: var(--muted); font-size: 14px; padding: 2px 6px; border-radius: 6px; }
 .qclose:hover { background: var(--panel-3); color: var(--ink); }

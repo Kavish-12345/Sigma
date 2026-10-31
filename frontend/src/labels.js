@@ -37,7 +37,7 @@ export function formatValue(options, field, value) {
     case "primary_property":
       return value;
     case "volume_cm3":
-      return typeof value === "number" ? `${value} cm³` : "Not given";
+      return typeof value === "number" ? `${Number((value / 1e6).toPrecision(6))} m³` : "Not given"; // stored in cm³
     case "min_limits": {
       const keys = Object.keys(value || {});
       if (!keys.length) return "None";

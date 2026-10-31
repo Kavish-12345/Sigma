@@ -57,6 +57,7 @@ export const FIELD_ORDER = [...REQUIRED, ...OPTIONAL];
 
 export const FIELD_LABELS = {
   part_name: "Part name",
+  part_detail: "Part detail",
   function: "Function",
   design_inputs: "Loads & sizes",
   properties: "Properties",
@@ -82,9 +83,17 @@ export function emptyForm() {
 // design input fields of one function (from /api/options)
 export const designInputs = (options, fn) => options?.fields?.function?.find((o) => o.value === fn)?.inputs || [];
 
-// required = a number with no default that is not optional
+// show_if: the input applies only for these values of another (select) input
+export const inputShown = (i, vals) => !i.show_if || i.show_if.in.includes(vals[i.show_if.key]);
+
+// required = a number with no default that is not optional; need_one = at least one of a group
 export function designComplete(inputs, vals) {
-  return inputs.every((i) => i.type === "select" || i.optional || "default" in i || (vals[i.key] !== "" && vals[i.key] != null && Number(vals[i.key]) > 0));
+  const shown = inputs.filter((i) => inputShown(i, vals));
+  const group = shown.filter((i) => i.need_one);
+  return (
+    shown.every((i) => i.type === "select" || i.optional || "default" in i || (vals[i.key] !== "" && vals[i.key] != null && Number(vals[i.key]) > 0)) &&
+    (!group.length || group.some((i) => Number(vals[i.key]) > 0))
+  );
 }
 
 // Same conversion for chat and No-AI form, so both give identical results.
@@ -103,6 +112,7 @@ export function toPayload(form, priceOverrides = {}, topN = 10) {
     min_limits: form.min_limits && typeof form.min_limits === "object" ? form.min_limits : {},
     include: Array.isArray(form.include) ? form.include : [],
     avoid: Array.isArray(form.avoid) ? form.avoid : [],
+    part_notes: Array.isArray(form.notes) ? form.notes : [],
     price_overrides: priceOverrides,
     top_n: topN,
   };

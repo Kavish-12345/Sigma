@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { designComplete, inputShown } from "../api.js";
 
 // Question popup docked above the input box. Answers are sent as structured values
 // (recorded directly by code) and also shown as the user's message in the chat.
@@ -21,10 +22,11 @@ export default function QuestionCard({ spec, onAnswer, onClose }) {
     setActive(0);
     setDesign(designDefaults());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec.field, spec.function]);
+  }, [spec.field, spec.function, spec.title]);
 
   const opts = spec.options || [];
   const enabled = opts.filter((o) => !o.disabled);
+  const designOpts = opts.filter((o) => inputShown(o, design));
 
   function notSure() {
     onAnswer("not_sure", "Not sure");
@@ -65,7 +67,7 @@ export default function QuestionCard({ spec, onAnswer, onClose }) {
   function submitDesign() {
     const value = {};
     const text = [];
-    opts.forEach((o) => {
+    designOpts.forEach((o) => {
       const v = design[o.key];
       if (v === undefined || v === "") return;
       value[o.key] = o.type === "select" ? v : Number(v);
@@ -74,18 +76,15 @@ export default function QuestionCard({ spec, onAnswer, onClose }) {
     onAnswer(value, text.join(", "));
   }
 
-  const designOk = opts.every(
-    (o) => o.type === "select" || o.optional || (design[o.key] !== undefined && design[o.key] !== "" && Number(design[o.key]) > 0)
-  );
-
   const canContinue =
     spec.type === "multi"
       ? picked.length > 0
       : spec.type === "number"
       ? Number(num) > 0
-      : spec.type === "design"
-      ? designOk
-      : spec.type === "limits";
+      : spec.type === "design" || spec.type === "limits"; // blank values just skip the calculation
+
+  // Enter must not send a half-filled design card by accident; the Continue button always works
+  const enterOk = canContinue && (spec.type !== "design" || designComplete(opts, design));
 
   function submit() {
     if (spec.type === "design") submitDesign();
@@ -101,7 +100,7 @@ export default function QuestionCard({ spec, onAnswer, onClose }) {
       const typing = tag === "TEXTAREA" || tag === "INPUT";
       if (e.key === "Escape") return onClose();
       if (typing) {
-        if (e.key === "Enter" && tag === "INPUT" && canContinue) {
+        if (e.key === "Enter" && tag === "INPUT" && enterOk) {
           e.preventDefault();
           submit();
         }
@@ -117,7 +116,7 @@ export default function QuestionCard({ spec, onAnswer, onClose }) {
       } else if (e.key === "Enter") {
         const o = opts[active];
         if (spec.type === "single" && o) chooseSingle(o);
-        else if (canContinue) submit();
+        else if (enterOk) submit();
       }
     }
     window.addEventListener("keydown", onKey);
@@ -143,6 +142,8 @@ export default function QuestionCard({ spec, onAnswer, onClose }) {
           </button>
         </div>
       </div>
+
+      {spec.info && <p className="qinfo">{spec.info}</p>}
 
       {(spec.type === "single" || spec.type === "multi") && (
         <div className="qopts">
@@ -180,7 +181,7 @@ export default function QuestionCard({ spec, onAnswer, onClose }) {
           <label className="qfield">
             <span>Volume</span>
             <div className="qinput">
-              <input type="number" min="0" value={num} onChange={(e) => setNum(e.target.value)} placeholder="e.g. 120" autoFocus />
+              <input type="number" min="0" step="any" value={num} onChange={(e) => setNum(e.target.value)} placeholder="e.g. 0.00012" autoFocus />
               <em>{spec.unit}</em>
             </div>
             <small>{spec.hint}</small>
@@ -190,7 +191,7 @@ export default function QuestionCard({ spec, onAnswer, onClose }) {
 
       {spec.type === "design" && (
         <div className="qinputs grid">
-          {opts.map((o, i) => (
+          {designOpts.map((o, i) => (
             <label className={`qfield ${o.type === "select" ? "wide" : ""}`} key={o.key}>
               <span>
                 {o.label}

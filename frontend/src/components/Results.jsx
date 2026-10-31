@@ -57,6 +57,19 @@ export default function Results({ result, summary, options, form, busy, priceOve
 
       <DesignPanel design={result.design} result={result} onChart={summary ? () => setShowChart(true) : null} />
 
+      {result.form?.part_notes?.length > 0 && (
+        <div className="explain-strip">
+          <div>
+            <strong>Check for this part</strong>
+            <ul className="muted small">
+              {result.form.part_notes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {result.message && <div className="error">{result.message}</div>}
       {busy && <div className="muted">Re-ranking…</div>}
 

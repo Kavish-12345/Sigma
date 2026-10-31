@@ -1,5 +1,5 @@
 import { groupLabel } from "../labels.js";
-import { designComplete, designInputs } from "../api.js";
+import { designComplete, designInputs, inputShown } from "../api.js";
 
 // Plain form that fills exactly the same fields as the chat and calls the same /api/recommend.
 export default function NoAIForm({ options, form, setForm, onReview }) {
@@ -55,8 +55,11 @@ export default function NoAIForm({ options, form, setForm, onReview }) {
 
   // Optional fields left blank count as "none" so the summary can be confirmed.
   function review() {
+    const skipped = form.function && !form.design_inputs; // values left blank: go on without the calculation
     setForm({
       ...form,
+      design_inputs: skipped ? "not_sure" : form.design_inputs,
+      notes: skipped ? ["Stress calculation skipped: not all loads and sizes were entered."] : form.notes,
       volume_cm3: form.volume_cm3 ?? "not_sure",
       min_limits: form.min_limits ?? {},
       include: form.include ?? [],
@@ -114,7 +117,7 @@ export default function NoAIForm({ options, form, setForm, onReview }) {
         </label>
         {inputs.length > 0 && (
           <div className="grid2">
-            {inputs.map((i) =>
+            {inputs.filter((i) => inputShown(i, draft)).map((i) =>
               i.type === "select" ? (
                 <label className="field" key={i.key}>
                   <span>{i.label}</span>
@@ -140,7 +143,7 @@ export default function NoAIForm({ options, form, setForm, onReview }) {
             )}
           </div>
         )}
-        {inputs.length > 0 && !form.design_inputs && <p className="muted small">Fill every value to run the design calculation.</p>}
+        {inputs.length > 0 && !form.design_inputs && <p className="muted small">Fill the values to run the design calculation. If you leave them blank, it is skipped.</p>}
       </div>
 
       <div className="field">
@@ -196,13 +199,14 @@ export default function NoAIForm({ options, form, setForm, onReview }) {
         {select("weight_priority", "How important is low weight?")}
         {select("cost_priority", "How important is low cost?")}
         <label className="field">
-          <span>Part volume (cm³, optional)</span>
+          <span>Part volume (m³, optional)</span>
           <input
             type="number"
             min="0"
-            value={typeof form.volume_cm3 === "number" ? form.volume_cm3 : ""}
-            onChange={(e) => set("volume_cm3", e.target.value ? Number(e.target.value) : null)}
-            placeholder="for cost per part"
+            step="any"
+            value={typeof form.volume_cm3 === "number" ? Number((form.volume_cm3 / 1e6).toPrecision(6)) : ""}
+            onChange={(e) => set("volume_cm3", e.target.value ? Number(e.target.value) * 1e6 : null)}
+            placeholder="e.g. 0.00012, for cost per part"
           />
         </label>
       </div>
