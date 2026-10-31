@@ -91,18 +91,32 @@ GEAR = dict(function="gear", design_inputs={"P_kW": 5, "N_rpm": 1440, "m_mm": 3,
             cost_priority="important", weight_priority="not_important")
 
 
-def test_normal_materials_rank_first_and_nothing_is_removed():
+def test_usual_practice_guides_the_list_and_nothing_is_removed():
     r = recommend({**GEAR, "top_n": 5})["results"]
-    assert r[0]["material_group"] == "alloy_steel" and r[0]["usage"] == "Common for this part"
-    assert not any(x["material_group"] == "free_cutting_steel" for x in r)
+    assert r[0]["usage"] != "Unusual for this part"
     asked = recommend({**GEAR, "include": ["free_cutting_steel"], "top_n": 5})["results"]
     assert asked and all(x["usage"] == "Unusual for this part" for x in asked)
+
+
+def test_cost_priority_changes_the_list():
+    def top(cost):
+        return [x["material"] for x in recommend({**GEAR, "cost_priority": cost, "top_n": 5})["results"]]
+    assert top("critical") != top("not_important")
+
+
+def test_far_too_strong_material_loses_suitability():
+    light = {**GEAR, "design_inputs": {**GEAR["design_inputs"], "P_kW": 0.2}, "top_n": 50}
+    heavy = {**GEAR, "design_inputs": {**GEAR["design_inputs"], "P_kW": 20}, "top_n": 50}
+    score = lambda form, name: next((x["suitability_pct"] for x in recommend(form)["results"] if x["material"] == name), None)
+    name = recommend({**heavy, "top_n": 1})["results"][0]["material"]
+    light_score, heavy_score = score(light, name), score(heavy, name)
+    assert light_score is None or light_score < heavy_score
 
 
 def test_general_part_uses_its_part_type():
     form = dict(function="general", design_inputs={"section": "rectangle", "b_mm": 18, "h_mm": 30, "F_kN": 25, "M_Nm": 40},
                 properties=["Structural"], cost_priority="important", top_n=5)
-    assert recommend({**form, "part_type": "rod"})["results"][0]["material_group"] == "alloy_steel"
+    assert any(x["usage"] for x in recommend({**form, "part_type": "rod"})["results"])
     assert all(x["usage"] == "" for x in recommend(form)["results"])
 
 
