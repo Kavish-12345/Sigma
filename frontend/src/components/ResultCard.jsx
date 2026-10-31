@@ -133,7 +133,7 @@ export default function ResultCard({ r, onOverride, onDatasheet, onCompare, comp
               </ul>
             </>
           )}
-          <h4>Suitability per target class (60% ML model, 40% engineering properties)</h4>
+          <h4>Suitability per target class (80% ML model, 20% engineering properties)</h4>
           {Object.entries(r.class_suitability_pct).map(([c, p]) => (
             <div className="wbar" key={c}>
               <span>{c}</span>
