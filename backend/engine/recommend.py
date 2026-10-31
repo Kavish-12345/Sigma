@@ -135,6 +135,10 @@ NOT_FOR_HEAT = ("aluminium", "magnesium")       # these lose most of their stren
 UNPROVEN_ELONGATION_SU = 1100   # MPa: above this an estimated elongation cannot be trusted (hardened, likely brittle)
 ESTIMATE_PENALTY = 0.9          # when ductility is required, a material with only an estimated elongation scores lower
 USAGE_LABEL = {2: "Common for this part", 1: "", 0: "Unusual for this part"}
+SUITABILITY_BOOST, CRITICAL_BOOST = 3, 2   # TOPSIS weights: ML is about half of the score, and critical priorities still count
+USAGE_FACTOR = {2: 1.0, 1: 0.9, 0: 0.7}   # adjusts the TOPSIS score: usual practice counts, but it can be outweighed
+# Far more strength than the part needs: from OVERDESIGN_FROM × the requirement, up to the full penalty at OVERDESIGN_TO ×
+OVERDESIGN_FROM, OVERDESIGN_TO, OVERDESIGN_PENALTY = 2.0, 5.0, 0.30
 
 
 def design_objective(form: dict) -> str:
@@ -182,8 +186,12 @@ def recommend(form: dict) -> dict:
     if form["environment"] == "high_temperature" and "Heat-resistant" in eng["classes"]:
         targets.setdefault("Heat-resistant", OTHER_IMPORTANCE)  # the environment is a requirement, chosen or not
     raw_w = topsis_weights(form)
-    if design:  # Ashby material index: as important as ML suitability
+    if design:  # Ashby material index: as important as suitability before the boost
         raw_w["index"] = raw_w["suitability"]
+    raw_w["suitability"] *= SUITABILITY_BOOST
+    for key, priority in (("cost", "cost_priority"), ("density", "weight_priority")):
+        if form[priority] == "critical":   # a critical priority must still count against the boost
+            raw_w[key] *= CRITICAL_BOOST
     crit_keys = list(raw_w)
 
     # 1. Screening: hard limits (user + design calculation) and include / avoid
@@ -271,6 +279,10 @@ def recommend(form: dict) -> dict:
         cand["suitability"] = cand[[f"p::{c}" for c in eng["classes"]]].max(axis=1)
     if design and "A5" in design["requirements"]:
         cand["suitability"] = cand["suitability"].where(~cand["A5_imputed"], cand["suitability"] * ESTIMATE_PENALTY)
+    if design:  # suitability for this load, not only for this kind of use
+        over = ((_strength_margin(cand, design) - OVERDESIGN_FROM) / (OVERDESIGN_TO - OVERDESIGN_FROM)).clip(0, 1)
+        cand["overdesign"] = 1 - OVERDESIGN_PENALTY * over
+        cand["suitability"] = cand["suitability"] * cand["overdesign"]
 
     # 3. Price layer: cited range per group; ranking uses the midpoint
     eff = effective_prices(prices, form["price_overrides"])
@@ -293,8 +305,7 @@ def recommend(form: dict) -> dict:
     if design:
         ix = design["index"]
         # Strength counts as the margin over what the part needs, and only up to STRENGTH_MARGIN
-        ratios = [cand[c["prop"]] / c["required"] for c in design["checks"] if not c.get("no_fos") and c["required"]]
-        margin = pd.concat(ratios, axis=1).min(axis=1).clip(upper=STRENGTH_MARGIN)
+        margin = _strength_margin(cand, design).clip(upper=STRENGTH_MARGIN)
         perf = margin ** ix["n"] / (cand["E"] if ix["use_E"] else 1.0)
         if ix["objective"] == "min_cost":
             kg_price = cand["price_category"].map(lambda c: eff[c]["typical"]).astype(float)
@@ -313,9 +324,11 @@ def recommend(form: dict) -> dict:
     w = np.array([raw_w[k] for k in crit_keys], dtype=float)
     benefit = np.array([k in ("suitability", "corrosion", "index") for k in crit_keys])
     cand["topsis"] = topsis(cand[crit].to_numpy(dtype=float), w, benefit)
-    # Materials normally used for this kind of part first; inside each level the TOPSIS order stands
+    # Usual practice adjusts the score, so a clearly better or cheaper material can still come first
     cand["usage"] = usage_rank(cand["price_category"], form.get("part_type") or PART_TYPE_OF_FUNCTION.get(form["function"]))
-    cand = cand.sort_values(["usage", "topsis", "suitability"], ascending=False)
+    factors = {**USAGE_FACTOR, 1: 1.0} if form["cost_priority"] == "critical" else USAGE_FACTOR  # cheaper groups may lead
+    cand["ranking"] = cand["topsis"] * cand["usage"].map(factors)
+    cand = cand.sort_values(["ranking", "suitability"], ascending=False)
 
     top = _varied(cand, form["top_n"])
     ref = top.iloc[0]["cost_typical"]  # #1's typical cost, for the comparison label
@@ -338,6 +351,12 @@ def recommend(form: dict) -> dict:
         "results": results,
         "note": "TOPSIS scores are relative to the candidate set; changing the set can change the order (rank reversal).",
     }
+
+
+def _strength_margin(cand: pd.DataFrame, design: dict) -> pd.Series:
+    """How many times each material exceeds the part's tightest strength requirement (1 = just meets it)."""
+    ratios = [cand[c["prop"]] / c["required"] for c in design["checks"] if not c.get("no_fos") and c["required"]]
+    return pd.concat(ratios, axis=1).min(axis=1)
 
 
 def _varied(cand: pd.DataFrame, n: int) -> pd.DataFrame:
@@ -425,6 +444,8 @@ def _explain(row, rank, targets, eff, vol, ref, design=None) -> dict:
                  "index_value": float(row["index_value"]),
                  "index_rel_pct": round(float(row["index_rel"]), 1)}
         why.append(f"Material index {design['index']['text']}: {row['index_rel']:.0f}% of the best candidate")
+        if row["overdesign"] < 1:
+            why.append(f"Much stronger than this part needs: suitability reduced by {(1 - row['overdesign']) * 100:.0f}%")
     return {
         **extra,
         "rank": rank,
