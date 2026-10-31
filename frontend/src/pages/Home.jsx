@@ -74,7 +74,7 @@ export default function Home({ page = "home", onStart, go }) {
         <div className="brand" onClick={() => go("/")} title="Home">
           <Logo size={34} />
           <div>
-            <h1 className="wordmark">MATIFY</h1>
+            <h1 className="wordmark">SIGMA</h1>
             <p>Material selection engine</p>
           </div>
         </div>

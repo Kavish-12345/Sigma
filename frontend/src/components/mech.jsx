@@ -151,13 +151,13 @@ export function GearLoader({ label = "Ranking materials" }) {
 export function Logo({ size = 34 }) {
   const [failed, setFailed] = useState(false);
   if (!failed) {
-    return <img src="/logo.png" alt="Matify" width={size} height={size} className="logo-img" onError={() => setFailed(true)} />;
+    return <img src="/logo.png" alt="Sigma" width={size} height={size} className="logo-img" onError={() => setFailed(true)} />;
   }
   return (
-    <svg viewBox="-50 -50 100 100" width={size} height={size} className="logo-svg" aria-label="Matify">
+    <svg viewBox="-50 -50 100 100" width={size} height={size} className="logo-svg" aria-label="Sigma">
       <path d={gearPath(12, 46, 37)} className="logo-gear" />
       <circle r="26" className="logo-inner" />
-      <text x="0" y="10" textAnchor="middle" className="logo-m">M</text>
+      <text x="0" y="10" textAnchor="middle" className="logo-m">σ</text>
     </svg>
   );
 }

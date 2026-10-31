@@ -38,7 +38,7 @@ export default function Datasheet({ r, summary, partName, onClose }) {
           <div className="brand">
             <Logo size={30} />
             <div>
-              <div className="wordmark">MATIFY</div>
+              <div className="wordmark">SIGMA</div>
               <div className="muted small">Material datasheet</div>
             </div>
           </div>
