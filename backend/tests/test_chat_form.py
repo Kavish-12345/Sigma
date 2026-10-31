@@ -1,4 +1,6 @@
 """Chat form validation tests (no LLM call needed). Run: python -m pytest backend/tests -q"""
+import time
+
 from backend.chat.form_state import apply_answer, empty_form, missing_fields, to_recommend_payload
 from backend.engine.recommend import load_engine, recommend
 
@@ -26,6 +28,20 @@ def test_volume_is_entered_in_m3_and_stored_in_cm3():
         f = empty_form()
         assert apply_answer(f, "volume_cm3", answer, "", GROUPS) is None
         assert abs(f["volume_cm3"] - cm3) < 1e-9
+
+
+def test_absurd_volume_rejected():
+    f = empty_form()
+    assert apply_answer(f, "volume_cm3", "1e999", "", GROUPS) is not None and f["volume_cm3"] is None
+
+
+def test_huge_answer_is_handled_quickly():
+    f = empty_form()
+    apply_answer(f, "function", "gear", "", GROUPS, CLASSES)
+    start = time.time()
+    for field in ("design_inputs", "min_limits"):
+        apply_answer(f, field, "x" * 100000, "", GROUPS, CLASSES)
+    assert time.time() - start < 1
 
 
 def test_invalid_values_rejected():

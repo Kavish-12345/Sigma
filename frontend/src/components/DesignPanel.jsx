@@ -42,7 +42,7 @@ export default function DesignPanel({ design, result, onChart }) {
             <div className="dp-req">
               {Object.entries(design.requirements).map(([k, v]) => (
                 <span key={k} className="chip on">
-                  {PROP_NAME[k] || k} ≥ {Number(v).toLocaleString()} MPa
+                  {k === "A5" ? `Elongation ≥ ${v}%` : `${PROP_NAME[k] || k} ≥ ${Number(v).toLocaleString()} MPa`}
                 </span>
               ))}
               {design.min_corrosion_score && <span className="chip on">Corrosion score ≥ {design.min_corrosion_score}/5 (environment)</span>}

@@ -28,11 +28,13 @@ from backend.engine.design import COMMON_INPUTS, FUNCTIONS, function_options
 from backend.engine.options import FIELDS, MIN_LIMIT_FIELDS, property_options
 
 from .form_state import FIELD_ORDER, OPTIONAL, REQUIRED, apply_answer, missing_fields, normalise_form
-from .part_detail import answer_detail, apply_step, detail_prompt, detail_spec, finish, needs_details
+from .part_detail import (answer_detail, apply_step, detail_prompt, detail_spec, finish, hints_prompt, needs_details,
+                          set_hints)
 
 BASE_URL = "https://api.groq.com/openai/v1"
 MODEL = "openai/gpt-oss-120b"
 MAX_TOOL_ROUNDS = 5
+_PART_CACHE: dict[tuple, dict] = {}
 
 FAMILY_LABELS = {"ferrous": "Steels and cast irons", "aluminium": "Aluminium alloys",
                  "copper": "Copper alloys", "magnesium": "Magnesium alloys"}
@@ -213,7 +215,7 @@ Recording rules:
 - Map the user's words to the allowed values exactly (e.g. "Outdoors / humid" -> outdoor_humid).
 - Function: this follows "material selection in the design process". Map the part to the machine element that
   describes how it is loaded (bolt -> tie, bracket/holder/lever -> beam, axle -> shaft, pipe/tank -> pressure_vessel,
-  coil spring -> spring, gear/pinion -> gear). If the part clearly matches, record function and say in a few words
+  coil spring -> spring, gear/pinion -> gear, connecting rod/pushrod/strut -> general). If the part clearly matches, record function and say in a few words
   how it is loaded (e.g. "A gear tooth bends at its root, so I'll design it as a spur gear."). If the part is vague
   (e.g. "holder", "plate", "connector"), ask how the load acts on it before recording function. If no standard
   element fits, or several loads act together (connecting rod, hook, clevis, crank arm, housing), use general: ask
@@ -289,10 +291,18 @@ def _ask_json(client, model: str, extra: dict, prompt: str) -> dict | None:
 
 
 def _part_step(client, model: str, extra: dict, form: dict, group_keys: list[str], classes: list[str]) -> str:
-    """Next part-specific question (or the wrap-up). Falls back to the fixed form if the model fails twice."""
+    """Next part-specific question (or the wrap-up). Falls back to the fixed form if the model fails twice.
+    Replies are kept per part and answers, so the same path gives the same questions until the server restarts."""
+    key = (form["part_name"].strip().lower(), tuple(d["answer"] for d in form["details"]))
     for _ in range(2):
-        text = apply_step(form, _ask_json(client, model, extra, detail_prompt(form, classes)), group_keys, classes)
+        data = _PART_CACHE.get(key) or _ask_json(client, model, extra, detail_prompt(form, classes))
+        text = apply_step(form, data, group_keys, classes)
         if text is not None:
+            _PART_CACHE[key] = data
+            if form["details_done"] and form["function"] in FUNCTIONS:
+                hint_key = (key[0], form["function"])
+                _PART_CACHE[hint_key] = _PART_CACHE.get(hint_key) or _ask_json(client, model, extra, hints_prompt(form))
+                set_hints(form, _PART_CACHE[hint_key])
             return text
     return finish(form, {}, group_keys, classes)
 

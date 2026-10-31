@@ -97,7 +97,7 @@ export function designComplete(inputs, vals) {
 }
 
 // Same conversion for chat and No-AI form, so both give identical results.
-export function toPayload(form, priceOverrides = {}, topN = 10) {
+export function toPayload(form, priceOverrides = {}, topN = 5) {
   const vol = form.volume_cm3;
   return {
     part_name: form.part_name || null,
@@ -113,6 +113,7 @@ export function toPayload(form, priceOverrides = {}, topN = 10) {
     include: Array.isArray(form.include) ? form.include : [],
     avoid: Array.isArray(form.avoid) ? form.avoid : [],
     part_notes: Array.isArray(form.notes) ? form.notes : [],
+    part_type: form.part_type || null,
     price_overrides: priceOverrides,
     top_n: topN,
   };

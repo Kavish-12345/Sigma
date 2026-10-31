@@ -10,6 +10,9 @@ const PROPS = [
   ["mu", "Poisson's ratio", ""],
 ];
 
+// what the score means, class by class: [label, from %, below %]
+const FIT = [["Fits", 70, 101], ["Partly fits", 30, 70], ["Weak on", 0, 30]];
+
 const BASIS = { market: "Market", listing: "Listing", custom: "Your price", not_available: "No price" };
 
 export default function ResultCard({ r, onOverride, onDatasheet, onCompare, compared, compareFull }) {
@@ -49,6 +52,12 @@ export default function ResultCard({ r, onOverride, onDatasheet, onCompare, comp
         </div>
         <strong>{r.suitability_pct.toFixed(0)}%</strong>
       </div>
+      {FIT.map(([label, lo, hi]) => {
+        const names = Object.entries(r.class_suitability_pct).filter(([, p]) => p >= lo && p < hi).map(([c]) => c);
+        return names.length > 0 && <div className="muted small" key={label}>{label}: {names.join(", ")}</div>;
+      })}
+      {r.usage && <div className="muted small">{r.usage}</div>}
+      {r.a5_imputed && <div className="muted small">Elongation is estimated, not measured</div>}
 
       {r.design_check && (
         <div className="dcheck">
@@ -124,7 +133,7 @@ export default function ResultCard({ r, onOverride, onDatasheet, onCompare, comp
               </ul>
             </>
           )}
-          <h4>Model suitability per target class</h4>
+          <h4>Suitability per target class (60% ML model, 40% engineering properties)</h4>
           {Object.entries(r.class_suitability_pct).map(([c, p]) => (
             <div className="wbar" key={c}>
               <span>{c}</span>

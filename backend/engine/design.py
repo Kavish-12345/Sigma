@@ -14,9 +14,30 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 # Fatigue: endurance limit Se = 0.5 * Su * K, with K = combined surface and size
 # factor (machined surface, small part). A deliberately simple, stated assumption.
 SE_RATIO, MARIN_K = 0.5, 0.75
+# Minimum elongation (%) for parts that must not fail suddenly. 11% is the usual guaranteed
+# value for quenched and tempered 42CrMo4. Gears and springs are hardened on purpose, so exempt.
+MIN_ELONGATION = {"cyclic": 8.0, "shock": 11.0}
+NO_DUCTILITY_LIMIT = ("gear", "spring")
+# Every part here has a fixed size, so strength past this multiple of the requirement earns no ranking credit
+STRENGTH_MARGIN = 1.5
+# Effective length factor K for a compressed member (Le = K·L)
+END_FACTOR = {"pinned": 1.0, "fixed_pinned": 0.7, "fixed": 0.5, "fixed_free": 2.0}
+BUCKLING_INPUTS = [
+    {"key": "L_mm", "label": "Unsupported length, only if the force can push", "unit": "mm", "hint": "leave blank if tension only",
+     "optional": True},
+    {"key": "ends", "label": "End condition (compression)", "type": "select", "default": "pinned",
+     "options": [{"value": "pinned", "label": "Pinned at both ends"},
+                 {"value": "fixed_pinned", "label": "Fixed at one end, pinned at the other"},
+                 {"value": "fixed", "label": "Fixed at both ends"},
+                 {"value": "fixed_free", "label": "Fixed at one end, free at the other"}]},
+]
+LOADED_SECTIONS = {"key": "section", "in": ["solid_round", "hollow_round", "rectangle"]}
+MIN_INPUT, MAX_INPUT, MIN_TEETH = 1e-6, 1e9, 8   # beyond these a value is a typing mistake
 
 
 class MissingInput(ValueError):
@@ -26,7 +47,8 @@ COMMON_INPUTS = [
     {"key": "fos", "label": "Factor of safety", "unit": "", "hint": "e.g. 2", "default": 2.0},
     {"key": "loading", "label": "Type of load", "type": "select", "default": "steady",
      "options": [{"value": "steady", "label": "Steady (static)"},
-                 {"value": "cyclic", "label": "Fluctuating / repeated (fatigue)"}]},
+                 {"value": "cyclic", "label": "Fluctuating / repeated (fatigue)"},
+                 {"value": "shock", "label": "Shock / impact, repeated"}]},
 ]
 
 # index: M = (strength)^n / rho  (the Ashby minimum-mass index for that function,
@@ -41,6 +63,7 @@ FUNCTIONS = {
         "inputs": [
             {"key": "F_kN", "label": "Axial force", "unit": "kN", "hint": "e.g. 20"},
             {"key": "d_mm", "label": "Rod diameter", "unit": "mm", "hint": "e.g. 16"},
+            *BUCKLING_INPUTS,
         ],
         "free_variable": "Cross-section area",
         "index": {"n": 1.0, "prop": "Sy", "text": "σy / ρ"},
@@ -158,6 +181,7 @@ FUNCTIONS = {
             {"key": "Kt", "label": "Stress concentration factor Kt", "unit": "", "default": 1.0, "optional": True,
              "hint": "1 if none; holes and sharp fillets ≈ 2-3 (fatigue only)",
              "show_if": {"key": "section", "in": ["solid_round", "hollow_round", "rectangle"]}},
+            *[{**i, "show_if": LOADED_SECTIONS} for i in BUCKLING_INPUTS],
             {"key": "stress_MPa", "label": "Peak von Mises stress", "unit": "MPa", "hint": "e.g. 180",
              "show_if": {"key": "section", "in": ["known_stress"]}},
         ],
@@ -208,8 +232,12 @@ def clean_inputs(function: str, raw: dict) -> dict:
             x = float(v)
         except (TypeError, ValueError):
             raise ValueError(f"{spec['label']} must be a number")
+        if isinstance(v, bool) or not math.isfinite(x):
+            raise ValueError(f"{spec['label']} must be a number")
         if x < 0 or (x == 0 and not spec.get("optional")):
             raise ValueError(f"{spec['label']} must be positive")
+        if x > MAX_INPUT or 0 < x < MIN_INPUT:
+            raise ValueError(f"{spec['label']} = {x:g} is outside any realistic range")
         out[k] = x
     if out["fos"] < 1:
         raise ValueError("Factor of safety must be at least 1")
@@ -220,6 +248,10 @@ def clean_inputs(function: str, raw: dict) -> dict:
         raise ValueError("Inner diameter must be smaller than the outer diameter")
     if out.get("Kt", 1) < 1:
         raise ValueError("Stress concentration factor must be at least 1")
+    if function == "gear" and out["z"] < MIN_TEETH:  # the Lewis form factor collapses below this
+        raise ValueError(f"A spur gear needs at least {MIN_TEETH} teeth")
+    if function == "spring" and out["Dm_mm"] < 2 * out["dw_mm"]:
+        raise ValueError("Mean coil diameter must be at least twice the wire diameter")
     return out
 
 
@@ -232,20 +264,27 @@ def _fatigue(sigma_a: float, fos: float) -> float:
     return fos * sigma_a / (SE_RATIO * MARIN_K)
 
 
-def _section(x: dict) -> tuple[float, float, float, float, str]:
-    """Area, bending modulus Z, torsion modulus Zt (τ = T/Zt), peak shear factor, formula text."""
+def critical_stress(Sy, E, slenderness: float):
+    """Buckling stress of one material or a whole column of them: Johnson for short columns, Euler for long ones."""
+    transition = 2 * math.pi ** 2 * E / Sy   # Cc², where the two curves meet at Sy/2
+    return np.where(slenderness ** 2 < transition, Sy * (1 - slenderness ** 2 / (2 * transition)),
+                    math.pi ** 2 * E / slenderness ** 2)
+
+
+def _section(x: dict) -> tuple[float, float, float, float, str, float]:
+    """Area, bending modulus Z, torsion modulus Zt (τ = T/Zt), peak shear factor, formula text, least inertia I."""
     if x["section"] == "rectangle":
         b, h = x["b_mm"], x["h_mm"]
         w, t = max(b, h), min(b, h)
         return (b * h, b * h ** 2 / 6, w * t ** 2 / (3 + 1.8 * t / w), 1.5,
-                f"Rectangle {b:g} × {h:g} mm: A = bh, Z = bh²/6, Zt = wt²/(3 + 1.8t/w)")
+                f"Rectangle {b:g} × {h:g} mm: A = bh, Z = bh²/6, Zt = wt²/(3 + 1.8t/w)", w * t ** 3 / 12)
     d = x["d_mm"]
     di = x.get("di_mm", 0.0) if x["section"] == "hollow_round" else 0.0
     Z = math.pi * (d ** 4 - di ** 4) / (32 * d)
     if di:
         return (math.pi * (d ** 2 - di ** 2) / 4, Z, 2 * Z, 2.0,
-                f"Tube Ø{d:g}/Ø{di:g} mm: A = π(d²−di²)/4, Z = π(d⁴−di⁴)/(32d), Zt = 2Z")
-    return math.pi * d ** 2 / 4, Z, 2 * Z, 4 / 3, f"Solid round Ø{d:g} mm: A = πd²/4, Z = πd³/32, Zt = 2Z"
+                f"Tube Ø{d:g}/Ø{di:g} mm: A = π(d²−di²)/4, Z = π(d⁴−di⁴)/(32d), Zt = 2Z", Z * d / 2)
+    return math.pi * d ** 2 / 4, Z, 2 * Z, 4 / 3, f"Solid round Ø{d:g} mm: A = πd²/4, Z = πd³/32, Zt = 2Z", Z * d / 2
 
 
 def calculate(function: str, inputs: dict) -> dict:
@@ -257,12 +296,26 @@ def calculate(function: str, inputs: dict) -> dict:
     """
     x = clean_inputs(function, inputs)
     fos = x["fos"]
-    cyclic = x["loading"] == "cyclic" or FUNCTIONS[function].get("always_cyclic", False)
+    cyclic = x["loading"] in MIN_ELONGATION or FUNCTIONS[function].get("always_cyclic", False)
     steps, req, checks = [], {}, []
+    buckling = None
 
     def need(prop, value, name):
         req[prop] = max(req.get(prop, 0.0), value)
         checks.append({"name": name, "prop": prop, "required": _r(value)})
+
+    def check_buckling(force_kN: float, area: float, inertia: float):
+        """Euler/Johnson per material in the screening; the Euler part alone gives a limit on E."""
+        k = END_FACTOR[x["ends"]]
+        slender = k * x["L_mm"] / math.sqrt(inertia / area)
+        sigma = force_kN * 1000 / area
+        E = fos * sigma * slender ** 2 / math.pi ** 2
+        req["E"] = max(req.get("E", 0.0), E)
+        steps.extend([f"Buckling: effective length Le = {k:g} × {x['L_mm']:g} mm, least radius of gyration "
+                      f"r = {math.sqrt(inertia / area):.2f} mm, slenderness Le/r = {slender:.0f}",
+                      f"Euler σcr = π²E/(Le/r)² ≥ FoS·F/A = {fos * sigma:.1f} MPa  →  E ≥ {E:.0f} MPa",
+                      "Short columns use the Johnson formula instead; each material is checked with its own Sy and E"])
+        return {"slenderness": slender, "sigma": sigma}
 
     if function == "tie":
         A = math.pi * x["d_mm"] ** 2 / 4
@@ -275,6 +328,8 @@ def calculate(function: str, inputs: dict) -> dict:
             su = _fatigue(s, fos)
             need("Su", su, "Fatigue")
             steps.append(f"Fatigue: Se = {SE_RATIO}·{MARIN_K}·Su ≥ FoS·σ  →  Su ≥ {su:.0f} MPa")
+        if x.get("L_mm"):
+            buckling = check_buckling(x["F_kN"], A, math.pi * x["d_mm"] ** 4 / 64)
 
     elif function == "beam":
         cant = x["support"] == "cantilever"
@@ -377,7 +432,7 @@ def calculate(function: str, inputs: dict) -> dict:
             s = x["stress_MPa"]
             steps.append(f"Peak von Mises stress entered directly: σ = {s:.1f} MPa")
         else:
-            A, Z, Zt, kv, text = _section(x)
+            A, Z, Zt, kv, text, inertia = _section(x)
             sn = axial * 1000 / A + (x.get("M_Nm", 0.0) or 0.0) * 1000 / Z
             tau = (x.get("T_Nm", 0.0) or 0.0) * 1000 / Zt + kv * (x.get("V_kN", 0.0) or 0.0) * 1000 / A
             s = math.sqrt(sn ** 2 + 3 * tau ** 2)
@@ -392,18 +447,27 @@ def calculate(function: str, inputs: dict) -> dict:
             need("Su", su, "Fatigue")
             steps.append(f"Fatigue (treated as fully reversed, conservative): Se = {SE_RATIO}·{MARIN_K}·Su ≥ "
                          f"FoS·Kt·σ  →  Su ≥ {su:.0f} MPa")
-        if axial:
-            steps.append("Note: if the axial force is compressive on a slender part, check buckling separately")
+        if axial and x.get("L_mm"):
+            buckling = check_buckling(axial, A, inertia)
+        elif axial:
+            steps.append("Note: enter the unsupported length if the axial force can push, to check buckling")
         steps.append("First estimate: valid only if these values describe the most stressed section. "
                      "Confirm complex shapes with FEA or testing")
 
     if function == "shaft" and (x.get("M_Nm") or 0) > 0:
         cyclic = True   # rotating bending is always fully reversed
-    if cyclic:
+    if cyclic and x["loading"] == "steady":
         x["loading"] = "cyclic"
     if cyclic and function != "spring":
         steps.append(f"Assumed endurance limit Se ≈ {SE_RATIO}·Su × {MARIN_K} (surface + size factor)")
-    return {"inputs": x, "fos": fos, "cyclic": cyclic, "steps": steps,
+    if cyclic and function not in NO_DUCTILITY_LIMIT:
+        a5 = MIN_ELONGATION[x["loading"]]
+        req["A5"] = a5
+        checks.append({"name": "Ductility (elongation)", "prop": "A5", "required": a5, "no_fos": True})
+        steps.append(f"Ductility: {'shock' if x['loading'] == 'shock' else 'repeated'} loading must not cause "
+                     f"sudden failure  →  elongation ≥ {a5:g}%")
+    steps.append(f"Ranking: the size is fixed, so strength above {STRENGTH_MARGIN:g} × the requirement earns no extra credit")
+    return {"inputs": x, "fos": fos, "cyclic": cyclic, "steps": steps, "buckling": buckling,
             "requirements": {k: _r(v, 0) for k, v in req.items()}, "checks": checks}
 
 
