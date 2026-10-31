@@ -1,8 +1,10 @@
 """Part-aware questions: the LLM's reply is validated by code (no LLM call needed)."""
+import pytest
+
 from backend.chat import llm
 from backend.chat.form_state import apply_answer, empty_form, normalise_form, to_recommend_payload
 from backend.chat.part_detail import (MAX_QUESTIONS, answer_detail, apply_effect, apply_step, clean_effect,
-                                      clean_question, detail_spec, needs_details)
+                                      clean_question, detail_spec, hint_fits, needs_details, set_hints)
 
 GROUPS = ["ferrous", "aluminium"]
 CLASSES = ["Heat-resistant", "Heat-treatable", "Structural", "Wear-resistant"]
@@ -11,8 +13,8 @@ QUESTION = {"done": False, "info": "Rods see reversing inertia loads.", "questio
                         {"label": "Very hot", "effect": {"environment": "high_temperature", "classes": ["Heat-resistant"],
                                                          "note": "Check strength at temperature."}}]}
 FINISH = {"done": True, "summary": "It sees reversing load.", "function": "general",
-          "guide": {"design_inputs": "Use the peak load.", "made_up": "dropped"},
-          "hints": {"F_kN": "typically 10-40 kN", "made_up": "dropped", "section": "dropped: not a number input"}}
+          "guide": {"properties": "Fatigue matters.", "design_inputs": "Enter the material class.", "made_up": "dropped"}}
+HINTS = {"hints": {"F_kN": "typically 10-40 kN", "made_up": "dropped", "section": "dropped: not a number input"}}
 
 
 def form_with_part():
@@ -27,6 +29,11 @@ def test_effect_keeps_only_what_the_engine_understands():
     assert clean_effect(raw, CLASSES) == {"classes": ["Wear-resistant"], "cost_priority": "critical",
                                           "note": "Check toughness."}
     assert clean_effect("nonsense", CLASSES) == {}
+
+
+def test_badly_shaped_effect_is_dropped_not_a_crash():
+    bad = {"classes": [None, 5, {}], "environment": ["chemical"], "cost_priority": {}, "loading": ["shock"]}
+    assert clean_effect(bad, CLASSES) == {}
 
 
 def test_question_that_changes_nothing_is_rejected():
@@ -53,11 +60,39 @@ def test_milder_environment_does_not_replace_a_harsher_one():
     assert f["environment"] == "chemical"
 
 
+def test_shock_answer_is_not_downgraded():
+    f = form_with_part()
+    apply_effect(f, {"loading": "shock"}, GROUPS, CLASSES)
+    apply_effect(f, {"loading": "cyclic"}, GROUPS, CLASSES)
+    assert f["design_draft"]["loading"] == "shock"
+
+
+def test_hint_in_the_wrong_unit_is_dropped():
+    assert not hint_fits("~30-50 kN peak force", "N")
+    assert hint_fits("30000-50000 N", "N") and hint_fits("≈5-20 Nm", "N·m") and hint_fits("20-80 teeth", "")
+    assert hint_fits("0.5-2 kN", "kN") and hint_fits("typical for this part", "mm")
+    f = form_with_part()
+    apply_step(f, {**FINISH, "function": "beam"}, GROUPS, CLASSES)
+    set_hints(f, {"hints": {"F_N": "30-50 kN", "L_mm": "120-150 mm"}})
+    assert f["hints"] == {"L_mm": "120-150 mm"}
+    assert "buckling" not in f["guide"]["design_inputs"]  # a beam card has no such field
+
+
+@pytest.mark.parametrize("label, clean", [
+    ("Medium (20,000-100,000 km or ~50,000 cycles)", "Medium (20,000-100,000 km)"),
+    ("~30,000 km (≈1.5 ×10⁶ cycles)", "~30,000 km"),
+    ("Long service life", "Long service life"), ("Forged, 2 passes", "Forged, 2 passes"),
+])
+def test_made_up_cycle_counts_are_removed(label, clean):
+    q = clean_question({"question": "How long?", "options": [{"label": label, "effect": {"loading": "cyclic"}},
+                                                             {"label": "Other"}]}, CLASSES)
+    assert q["options"][0]["label"] == clean
+
+
 def test_guidance_with_internal_codes_is_dropped():
     f = form_with_part()
-    apply_step(f, {**FINISH, "guide": {"design_inputs": "section, d_mm, F_kN, stress_MPa", "properties": "Fatigue matters."}},
-               GROUPS, CLASSES)
-    assert f["guide"] == {"properties": "Fatigue matters."}
+    apply_step(f, {**FINISH, "guide": {"properties": "needs d_mm and F_kN"}}, GROUPS, CLASSES)
+    assert "properties" not in f["guide"]
 
 
 def test_answer_applies_its_effect():
@@ -89,7 +124,10 @@ def test_finish_sets_function_keeps_loading_and_filters_guidance():
     answer_detail(f, "0", "", GROUPS, CLASSES)
     assert apply_step(f, FINISH, GROUPS, CLASSES) == FINISH["summary"]
     assert f["function"] == "general" and f["design_draft"]["loading"] == "cyclic"
-    assert f["guide"] == {"design_inputs": "Use the peak load."} and f["hints"] == {"F_kN": "typically 10-40 kN"}
+    assert f["guide"]["properties"] == "Fatigue matters." and "made_up" not in f["guide"]
+    assert "buckling" in f["guide"]["design_inputs"] and "material class" not in f["guide"]["design_inputs"]
+    set_hints(f, HINTS)
+    assert f["hints"] == {"F_kN": "typically 10-40 kN"}
     assert not needs_details(f)
     assert f["design_inputs"] is None  # hints are guidance: the user still enters every value
 
@@ -109,6 +147,15 @@ def test_card_with_a_wrong_value_still_gets_a_message():
     card = {"section": "hollow_round", "d_mm": 20, "di_mm": 25, "F_kN": 1}
     assert "Inner diameter" in apply_answer(f, "design_inputs", card, "", GROUPS, CLASSES)
     assert f["design_inputs"] is None
+
+
+def test_part_type_is_kept_only_if_known():
+    f = form_with_part()
+    apply_step(f, {**FINISH, "part_type": "rod"}, GROUPS, CLASSES)
+    assert f["part_type"] == "rod" and to_recommend_payload(f)["part_type"] == "rod"
+    g = form_with_part()
+    apply_step(g, {**FINISH, "part_type": ["rod"]}, GROUPS, CLASSES)
+    assert g["part_type"] is None
 
 
 def test_blank_part_name_falls_back_to_the_users_words():
@@ -133,6 +180,7 @@ class _Fake:
 
 
 def _run(monkeypatch, form, replies, direct=None):
+    monkeypatch.setattr(llm, "_PART_CACHE", {})
     monkeypatch.setattr(llm, "_client", lambda: _Fake())
     monkeypatch.setattr(llm, "_ask_json", lambda *a: replies.pop(0))
     return llm.chat_turn([{"role": "user", "content": "connecting rod"}], form, {}, direct, CLASSES)
@@ -141,9 +189,9 @@ def _run(monkeypatch, form, replies, direct=None):
 def test_chat_asks_part_question_then_fixed_form(monkeypatch):
     done = _run(monkeypatch, form_with_part(), [QUESTION])
     assert done["question"]["field"] == "part_detail" and done["reply"] == QUESTION["info"]
-    done = _run(monkeypatch, done["form"], [FINISH], {"field": "part_detail", "value": "1", "label": "Very hot"})
+    done = _run(monkeypatch, done["form"], [FINISH, HINTS], {"field": "part_detail", "value": "1", "label": "Very hot"})
     assert done["form"]["details_done"] and done["question"]["field"] == "design_inputs"
-    assert done["question"]["info"] == "Use the peak load."
+    assert done["question"]["info"].startswith("Typical values")
     hint = next(o["hint"] for o in done["question"]["options"] if o["key"] == "F_kN")
     assert hint == "typically 10-40 kN"
 
@@ -162,10 +210,21 @@ def test_chat_retries_a_rejected_tool_call(monkeypatch):
             class completions:
                 pass
     Flaky.chat.completions.create = staticmethod(create)
+    monkeypatch.setattr(llm, "_PART_CACHE", {})
     monkeypatch.setattr(llm, "_client", lambda: Flaky())
     monkeypatch.setattr(llm, "_ask_json", lambda *a: QUESTION)
     done = llm.chat_turn([{"role": "user", "content": "rod"}], form_with_part(), {}, None, CLASSES)
     assert len(attempts) == 2 and done["question"]["field"] == "part_detail"
+
+
+def test_same_part_and_answers_reuse_the_saved_question(monkeypatch):
+    calls = []
+    monkeypatch.setattr(llm, "_PART_CACHE", {})
+    monkeypatch.setattr(llm, "_client", lambda: _Fake())
+    monkeypatch.setattr(llm, "_ask_json", lambda *a: calls.append(1) or QUESTION)
+    for _ in range(3):
+        llm.chat_turn([{"role": "user", "content": "rod"}], form_with_part(), {}, None, CLASSES)
+    assert len(calls) == 1
 
 
 def test_chat_falls_back_to_fixed_form_when_the_model_fails(monkeypatch):

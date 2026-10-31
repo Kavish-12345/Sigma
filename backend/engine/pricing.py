@@ -28,8 +28,14 @@ _PREFIXES = re.compile(r"\b(steel|gost|din|en|nf|bs|jis|csn|iso|ansi|sae|aisi)\b
 def _is_alloy_steel(name: str) -> bool:
     n = name.lower()
     m = re.search(r"\b(?:sae|aisi)\s*(\d)(\d)\d\d\b", n)
-    if m:
-        return m.group(1) in "23456789"
+    if m:  # 13xx = manganese steels
+        return m.group(1) in "23456789" or m.group(1, 2) == ("1", "3")
+    if re.search(r"\bbs\s*cr\d", n):  # BS 1449 cold-rolled carbon strip, not chromium
+        return False
+    if "gost 4543" in n or "smn" in n:  # GOST alloy structural steels; JIS SMn / SMnC
+        return True
+    if re.search(r"\bnf\s*\d{2}[cmnad]+\d", n):  # French codes: C = Cr, M = Mn, N = Ni, D = Mo, A = Al
+        return True
     m = re.search(r"\bcsn\s*1([3-6])\d{3}", n)
     if m:
         return True
@@ -43,11 +49,31 @@ def _is_alloy_steel(name: str) -> bool:
 
 def _stainless_kind(name: str) -> str:
     n = name.lower().replace(" ", "")
-    if re.search(r"316|317|nimo|17346|17347|17348|17349", n):
+    if re.search(r"316|317|nimo|17346|17347|17348|17349|z\d+cnd", n):  # French D = Mo
         return "stainless_mo"
-    if re.search(r"(sus|aisi|sae|bs|^)4[0-4]\d|x\d+cr\d+(?!ni)$|x\d+cr1[37]$|1702\d|1704\d", n) and "ni" not in n:
+    if re.search(r"x(17|20)crni1[67]", n):  # 431 type: martensitic despite the nickel
         return "stainless_ferritic"
+    if re.search(r"(sus|aisi|sae|bs|^)4[0-4]\d|x\d+cr\d+(?!ni)$|x\d+cr1[37]$|1702\d|1704\d"
+                 r"|sae51\d{3}|z\d+c\d|z\d+ca\d|z\d+cdmv|x\d+cral|x\d+crmov", n) and "ni" not in n:
+        return "stainless_ferritic"  # SAE 514xx/515xx = 400 series; French C = Cr with no N = no nickel
     return "stainless_austenitic"
+
+
+# "Heat-resistant" in the data also covers boiler and creep steels. They cost and rust like carbon
+# or low-alloy steel, so only the high-chromium grades belong in the heat-resistant price group.
+_BOILER_CARBON = re.compile(r"p\d{3}gh|\bdin hi+\b|grade (360|430)|\ba\d\dcp\b|\bcsn 11(368|418)|17mn4")
+_CREEP_LOW_ALLOY = re.compile(r"\d+crmo\d|1[56]mo3|15d3|15cd405|\bcsn 1(3030|5020|5121|5313)"
+                              r"|12ch1mf|12mch|20ch1m1f1|25ch1mf|18ch3mv|20ch3mvf")
+_HEAT_RESISTANT_MO = re.compile(r"316s|x2crnimon")  # 316L and duplex grades
+
+
+def _heat_resistant_kind(name: str) -> str:
+    n = name.lower()
+    if _HEAT_RESISTANT_MO.search(n):
+        return "stainless_mo"
+    if _BOILER_CARBON.search(n):
+        return "carbon_steel"
+    return "alloy_steel" if _CREEP_LOW_ALLOY.search(n) else "heat_resistant_steel"
 
 
 def _copper_category(name: str, desc: str) -> str:
@@ -65,7 +91,7 @@ def _copper_category(name: str, desc: str) -> str:
             return "copper_nickel"
         return "bronze"
     text = f"{n} {desc.lower()}"
-    if "brass" in text or re.search(r"\b4230\d\d", n) or re.search(r"\b4232\d\d", n):
+    if "brass" in text or re.search(r"\b4232\d\d", n):
         return "brass"
     return "bronze"
 
@@ -81,7 +107,7 @@ def price_category(row: pd.Series) -> str:
         grp = str(row.get("group", n))
         if re.search(r"\d{3}\.\d", grp) or ("csn" in grp and "Castings" in labels):
             return "aluminium_cast"
-        if re.search(r"\b[27]\d{3}\b", grp):
+        if re.search(r"\b[27]\d{3}\b", grp) or "alcu" in d:  # 2xxx by composition where the name is a CSN number
             return "aluminium_high_strength"
         return "aluminium_wrought"
     if fam == "copper":
@@ -99,7 +125,7 @@ def price_category(row: pd.Series) -> str:
     if "cast steel" in d:
         return "stainless_cast" if "corrosion" in d else "cast_steel"
     if "heat-resist" in d or "heat resist" in d or "high-temperature" in d:
-        return "heat_resistant_steel"
+        return _heat_resistant_kind(name)
     if "stainless" in d or "corrosion" in d or re.search(r"\bsus\d|\bsae\s*30\d{3}|\bx\d+crni", n):
         return _stainless_kind(name)
     if "spring" in d:

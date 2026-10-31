@@ -23,6 +23,7 @@ REQUIRED = ["part_name", "function", "design_inputs", "properties", "primary_pro
 OPTIONAL = ["volume_cm3", "min_limits", "include", "avoid"]
 FIELD_ORDER = REQUIRED + OPTIONAL
 
+MAX_ANSWER = 2000  # longer text is cut before parsing: the patterns below get very slow on huge input
 _NONE_WORDS = {"not_sure", "not sure", "none", "no", "skip", "nothing", "na", "n/a", "no limits", "dont know", "don't know"}
 
 
@@ -37,6 +38,7 @@ def empty_form() -> dict:
     form["guide"] = {}  # part-specific explanation for a form field
     form["hints"] = {}  # typical values for the design inputs (guidance only, never filled in)
     form["notes"] = []  # engineering cautions from the answers, shown with the results
+    form["part_type"] = None  # kind of part for a General part (see USAGE in fit.py)
     return form
 
 
@@ -55,6 +57,7 @@ def normalise_form(form: dict | None) -> dict:
         base["guide"] = dict(form.get("guide") or {})
         base["hints"] = dict(form.get("hints") or {})
         base["notes"] = list(form.get("notes") or [])
+        base["part_type"] = form.get("part_type")
     return base
 
 
@@ -116,7 +119,9 @@ def apply_answer(form: dict, field: str, value, user_words: str, groups: list[st
     if field not in FIELD_ORDER:
         return f"Unknown field '{field}'. Valid fields: {', '.join(FIELD_ORDER)}"
     raw = "" if value is None else value
-    text = raw if isinstance(raw, str) else str(raw)
+    if isinstance(raw, str):
+        raw = raw[:MAX_ANSWER]
+    text = raw if isinstance(raw, str) else str(raw)[:MAX_ANSWER]
 
     if field == "part_name":
         name = text.strip() or str(user_words or "").strip()
@@ -197,8 +202,8 @@ def apply_answer(form: dict, field: str, value, user_words: str, groups: list[st
             form[field] = "not_sure"
         else:
             m = re.search(r"\d*\.?\d+(?:[eE][-+]?\d+)?", text.replace(",", ""))
-            if not m or float(m.group()) <= 0:
-                return "volume_cm3 must be a positive number in m3, or 'not_sure'"
+            if not m or not 0 < float(m.group()) < 1e6:
+                return "volume_cm3 must be a positive, realistic number in m3, or 'not_sure'"
             # Entered in m3 (a unit written in the answer wins); stored in cm3, which the cost formula uses
             unit = text.lower()
             form[field] = float(m.group()) * (1.0 if "cm" in unit else 0.001 if "mm" in unit else 1e6)
@@ -280,6 +285,7 @@ def to_recommend_payload(form: dict, price_overrides: dict | None = None, top_n:
         "include": form.get("include") if isinstance(form.get("include"), list) else [],
         "avoid": form.get("avoid") if isinstance(form.get("avoid"), list) else [],
         "part_notes": form.get("notes") or [],
+        "part_type": form.get("part_type"),
         "price_overrides": price_overrides or {},
         "top_n": top_n,
     }
