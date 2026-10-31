@@ -12,7 +12,6 @@ import pandas as pd
 
 ML_WEIGHT = 0.6   # suitability = 60% trained model + 40% engineering fit
 HB_PER_SU = 1 / 3.45  # Brinell hardness estimated as Su/3.45 where the dataset has no hardness
-PROVEN_SCORE = 0.7    # lowest suitability for a class the material's own data proves
 HARDENED = r"quench|temper|harden|heat treat|improved|nitrid|carburi"  # "Improved" = Q+T in GOST data
 
 CAST_GROUPS = ("aluminium_cast", "cast_steel", "stainless_cast", "grey_cast_iron", "ductile_iron")
@@ -63,16 +62,6 @@ def usage_rank(group: pd.Series, part_type: str | None) -> pd.Series:
 def _ramp(x: pd.Series, low: float, high: float) -> pd.Series:
     """0 at low, 1 at high, straight line between."""
     return ((x - low) / (high - low)).clip(0, 1)
-
-
-def proven_by_data(df: pd.DataFrame) -> dict[str, pd.Series]:
-    """Rows whose own data proves the class, whatever the model says: hardened means heat-treatable,
-    and a wrought steel with real yield strength and measured ductility can carry structural load."""
-    text = df["Heat treatment"].fillna("").str.lower()
-    hardened = (text.str.contains(HARDENED) & ~text.str.contains("anneal")) | (df["ht_cat"] == "solution_aged")
-    wrought_steel = (df["family"] == "ferrous") & ~df["price_category"].isin(CAST_GROUPS + ("free_cutting_steel",))
-    return {"Heat-treatable": hardened & (df["price_category"].map(HARDENING).fillna(0) >= 0.5),
-            "Structural": wrought_steel & (df["Sy"] >= 235) & (df["A5"] >= 10) & ~df["A5_imputed"]}
 
 
 def class_fit(df: pd.DataFrame) -> dict[str, pd.Series]:

@@ -6,6 +6,9 @@ capable of several things usually carries one class, and the model learned that 
 not the others. fixed_labels() adds a class where the row's own data supports it. It never
 removes a label, and Data_labelled.csv is not changed.
 
+Tried and dropped, because the fair test did not improve: composition estimated from
+material names, and labelling more alloys as Spring.
+
 Run from the project root:
     python -m backend.engine.train            compare only, nothing is saved
     python -m backend.engine.train --save     also replace the model in backend/models/
@@ -15,7 +18,6 @@ from __future__ import annotations
 import datetime
 import json
 import sys
-from pathlib import Path
 
 import joblib
 import numpy as np
@@ -23,7 +25,7 @@ import pandas as pd
 import sklearn
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import accuracy_score, brier_score_loss, f1_score, hamming_loss
+from sklearn.metrics import accuracy_score, f1_score, hamming_loss
 from sklearn.model_selection import GroupKFold
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import Pipeline
@@ -35,19 +37,14 @@ from .pricing import load_prices, price_category
 from .recommend import DATA_DIR, MODEL_DIR, _proba
 
 SEED, N_SPLITS = 42, 5
-CHANGED = ("Corrosion-resistant", "Castings", "Heat-resistant", "Heat-treatable", "Structural")  # classes fixed_labels adds to
-
-CONFIGS = {
-    "current settings": dict(max_iter=300, learning_rate=0.05),
-    "regularised": dict(max_iter=150, learning_rate=0.05, max_depth=3, min_samples_leaf=20, l2_regularization=1.0),
-    "strongly regularised": dict(max_iter=80, learning_rate=0.05, max_depth=2, min_samples_leaf=30, l2_regularization=5.0),
-}
+PARAMS = dict(max_iter=300, learning_rate=0.05)  # less extreme settings lost too much accuracy
+UNTOUCHED = ("Free-machining", "Sheet forming", "Spring", "Wear-resistant")  # no labels added: the fair test
 
 
-def make_model(params: dict) -> Pipeline:
+def make_model() -> Pipeline:
     return Pipeline([("impute", SimpleImputer(strategy="median")),
                      ("clf", OneVsRestClassifier(HistGradientBoostingClassifier(
-                         class_weight="balanced", random_state=SEED, **params)))])
+                         class_weight="balanced", random_state=SEED, **PARAMS)))])
 
 
 def fixed_labels(df: pd.DataFrame, categories: dict) -> tuple[pd.Series, dict]:
@@ -71,11 +68,11 @@ def fixed_labels(df: pd.DataFrame, categories: dict) -> tuple[pd.Series, dict]:
     return labels, added
 
 
-def out_of_fold(params: dict, X: pd.DataFrame, Y: np.ndarray, groups: pd.Series) -> np.ndarray:
+def out_of_fold(X: pd.DataFrame, Y: np.ndarray, groups: pd.Series) -> np.ndarray:
     """Every row is predicted by a model that never saw its alloy."""
     P = np.zeros(Y.shape, dtype=float)
     for tr, te in GroupKFold(n_splits=N_SPLITS).split(X, Y, groups):
-        P[te] = _proba(make_model(params).fit(X.iloc[tr], Y[tr]), X.iloc[te])
+        P[te] = _proba(make_model().fit(X.iloc[tr], Y[tr]), X.iloc[te])
     return P
 
 
@@ -85,10 +82,6 @@ def scores(Y: np.ndarray, P: np.ndarray) -> dict:
             "macro_F1": round(f1_score(Y, pred, average="macro", zero_division=0), 3),
             "exact_match": round(accuracy_score(Y, pred), 3),
             "hamming_loss": round(hamming_loss(Y, pred), 3)}
-
-
-def extreme_share(P: np.ndarray) -> float:
-    return round(float(((P < 0.05) | (P > 0.95)).mean()), 3)
 
 
 def main(save: bool = False) -> None:
@@ -101,42 +94,30 @@ def main(save: bool = False) -> None:
     labels, added = fixed_labels(train, categories)
     print(f"{len(train)} rows, labels added: {added} (total {sum(added.values())})")
 
-    X, groups = build_X(train, meta["features"]), train["group"]
+    features = meta["features"]
+    groups = train["group"]
     mlb = MultiLabelBinarizer().fit(train["labels"])
     classes = list(mlb.classes_)
     Y_old, Y_new = mlb.transform(train["labels"]), mlb.transform(labels)
-    same = [i for i, c in enumerate(classes) if c not in CHANGED]
+    fair = [classes.index(c) for c in UNTOUCHED]
 
-    print("\nsaved model, old inputs, old labels:", meta["cv"]["scores"]["All"])
-    P_inputs = out_of_fold(CONFIGS["current settings"], X, Y_old, groups)
-    print("new inputs, old labels:             ", scores(Y_old, P_inputs))
-    best, best_key, results = None, None, {}
-    for name, params in CONFIGS.items():
-        P = out_of_fold(params, X, Y_new, groups)
-        results[name] = P
-        unchanged = round(f1_score(Y_old[:, same], (P[:, same] >= 0.5).astype(int), average="macro", zero_division=0), 3)
-        brier = round(float(np.mean([brier_score_loss(Y_new[:, i], P[:, i]) for i in range(len(classes))])), 4)
-        print(f"\n{name}: new labels {scores(Y_new, P)}")
-        print(f"  macro F1 on classes with no added labels: {unchanged} | extreme scores {extreme_share(P):.1%} | Brier {brier}")
-        kept = round(float(((P >= 0.5) & (Y_old == 1)).sum() / Y_old.sum()), 3)
-        print(f"  original labels still found: {kept:.1%}")
-        if best_key is None or brier < best_key:
-            best, best_key = name, brier
-    P_base = out_of_fold(CONFIGS["current settings"], X, Y_old, groups)
-    print(f"\nbaseline on the same classes: macro F1 {round(f1_score(Y_old[:, same], (P_base[:, same] >= 0.5).astype(int), average='macro'), 3)}"
-          f" | extreme scores {extreme_share(P_base):.1%}")
-    print("per class F1 (best model, new labels):",
-          {c: round(f1_score(Y_new[:, i], (results[best][:, i] >= 0.5).astype(int), zero_division=0), 2) for i, c in enumerate(classes)})
-    print("best by Brier:", best)
+    X = build_X(train, features)
+    P = out_of_fold(X, Y_new, groups)
+    pred = (P >= 0.5).astype(int)
+    print(f"\nscores: {scores(Y_new, P)}")
+    print(f"fair test, original labels, classes with none added: macro F1 "
+          f"{f1_score(Y_old[:, fair], pred[:, fair], average='macro', zero_division=0):.3f}")
+    print(f"extreme scores {((P < .05) | (P > .95)).mean():.1%} | per class F1 "
+          f"{ {c: round(f1_score(Y_new[:, i], pred[:, i], zero_division=0), 2) for i, c in enumerate(classes)} }")
 
     if save:
-        model = make_model(CONFIGS[best]).fit(X, Y_new)
+        model = make_model().fit(X, Y_new)
         joblib.dump(model, MODEL_DIR / "suitability_model.joblib")
         joblib.dump(mlb, MODEL_DIR / "label_binarizer.joblib")
-        meta.update(params=CONFIGS[best], labels_added=added, trained_on=datetime.date.today().isoformat(),
+        meta.update(params=PARAMS, labels_added=added, trained_on=datetime.date.today().isoformat(),
                     sklearn_version=sklearn.__version__, a5_medians=report["a5_medians"],
                     cv={"method": f"GroupKFold({N_SPLITS}), groups = alloy name without temper",
-                        "scores": {"All": scores(Y_new, results[best])}})
+                        "scores": {"All": scores(Y_new, P)}})
         (MODEL_DIR / "model_meta.json").write_text(json.dumps(meta, indent=2))
         print("saved to", MODEL_DIR)
 

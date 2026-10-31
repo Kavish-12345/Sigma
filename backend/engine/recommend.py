@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from .design import FUNCTIONS, STRENGTH_MARGIN, calculate, critical_stress, material_index, translation
-from .fit import ML_WEIGHT, PART_TYPE_OF_FUNCTION, PROVEN_SCORE, class_fit, proven_by_data, usage_rank
+from .fit import ML_WEIGHT, PART_TYPE_OF_FUNCTION, class_fit, usage_rank
 from .options import (FAMILIES, FIELDS, MIN_LIMIT_FIELDS, OTHER_IMPORTANCE, PRIORITY_WEIGHT, target_classes,
                       topsis_weights)
 from .preprocess import build_X, clean
@@ -66,10 +66,6 @@ def load_engine():
     fit = class_fit(df)
     for i, c in enumerate(classes):  # a class with no engineering rule keeps the model's value
         df[f"p::{c}"] = ML_WEIGHT * P[:, i] + (1 - ML_WEIGHT) * fit[c] if c in fit else P[:, i]
-    for c, proven in proven_by_data(df).items():
-        if c in classes:
-            floor = PROVEN_SCORE + (1 - PROVEN_SCORE) * fit[c]
-            df[f"p::{c}"] = df[f"p::{c}"].where(~proven, df[f"p::{c}"].clip(lower=floor))
     df["display_name"] = [
         f"{m}" + (f" ({h})" if isinstance(h, str) and h.strip() else "")
         for m, h in zip(df["Material"], df["Heat treatment"])
