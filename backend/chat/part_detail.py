@@ -72,12 +72,12 @@ def clean_question(raw, classes: list[str]) -> dict | None:
     every answer when it chooses the usual and unusual material groups."""
     if not isinstance(raw, dict):
         return None
-    text = str(raw.get("question") or "").strip()[:160]
+    text = str(raw.get("question") or "").strip()[:300]
     opts = []
     for o in (raw.get("options") if isinstance(raw.get("options"), list) else [])[:6]:
         if isinstance(o, dict) and str(o.get("label") or "").strip():
-            opts.append({"value": str(len(opts)), "label": _no_cycle_figure(o["label"])[:70],
-                         "description": _no_cycle_figure(o.get("description") or "")[:120],
+            opts.append({"value": str(len(opts)), "label": _no_cycle_figure(o["label"]).replace("_", " ")[:70],
+                         "description": _no_cycle_figure(o.get("description") or "").replace("_", " ")[:120],
                          "effect": clean_effect(o.get("effect"), classes)})
     for o in opts:  # a priority can only come from a question that asked about it
         for word, field in (("weight", "weight_priority"), ("cost", "cost_priority")):
@@ -106,10 +106,11 @@ General topics, for at most two questions in total: {'; '.join(TOPICS)}
 
 {"You have asked enough. Return the finish JSON now." if must_finish else
  "Ask the single most useful question not answered yet. At least four questions must be about features, failure "
- "points or service conditions that belong to this kind of part, such as big-end bolts and bearing cap fit for a "
- "connecting rod, keyways and shoulders for a shaft, or tooth finish and backlash for a gear. Test each question: if "
- "it would make sense unchanged for a different part, it is general, so prefer one that would not. Use what the "
- "answers already revealed, and ask at most one question per topic. Return the finish JSON when you have enough."}
+ "points or service conditions that belong to this kind of part, using your own engineering knowledge of how it is "
+ "built, how it fails and what it connects to. Test each question: if it would make sense unchanged for a different "
+ "part, it is general, so prefer one that would not. Use what the answers already revealed. Every question must be "
+ "about a different feature or topic: never ask a second question about one already asked. One question must ask how "
+ "the part is made, unless the user already said. Return the finish JSON when you have enough."}
 
 Return one JSON object. To ask a question:
 {{"done": false,

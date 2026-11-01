@@ -37,6 +37,11 @@ def test_badly_shaped_effect_is_dropped_not_a_crash():
     assert clean_effect(bad, CLASSES) == {}
 
 
+def test_option_labels_have_no_code_style_text():
+    q = clean_question({"question": "Loading?", "options": [{"label": "shock_impact", "description": "high_cycle load"}, {"label": "steady"}]}, CLASSES)
+    assert q["options"][0]["label"] == "shock impact" and q["options"][0]["description"] == "high cycle load"
+
+
 def test_question_needs_real_options():
     part_specific = {"question": "How is the big-end cap located?", "options": [{"label": "Fracture split"}, {"label": "Dowels"}]}
     assert clean_question(part_specific, CLASSES)["options"][0]["effect"] == {}
