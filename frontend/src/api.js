@@ -114,6 +114,7 @@ export function toPayload(form, priceOverrides = {}, topN = 5) {
     avoid: Array.isArray(form.avoid) ? form.avoid : [],
     part_notes: Array.isArray(form.notes) ? form.notes : [],
     part_type: form.part_type || null,
+    usage_groups: form.usage_groups || null,
     price_overrides: priceOverrides,
     top_n: topN,
   };

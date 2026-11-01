@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from .design import FUNCTIONS, STRENGTH_MARGIN, calculate, critical_stress, material_index, translation
-from .fit import ML_WEIGHT, PART_TYPE_OF_FUNCTION, PROVEN_SCORE, class_fit, proven_by_data, usage_rank
+from .fit import ML_WEIGHT, PART_TYPE_OF_FUNCTION, class_fit, usage_rank
 from .options import (FAMILIES, FIELDS, MIN_LIMIT_FIELDS, OTHER_IMPORTANCE, PRIORITY_WEIGHT, target_classes,
                       topsis_weights)
 from .preprocess import build_X, clean
@@ -66,10 +66,6 @@ def load_engine():
     fit = class_fit(df)
     for i, c in enumerate(classes):  # a class with no engineering rule keeps the model's value
         df[f"p::{c}"] = ML_WEIGHT * P[:, i] + (1 - ML_WEIGHT) * fit[c] if c in fit else P[:, i]
-    for c, proven in proven_by_data(df).items():
-        if c in classes:
-            floor = PROVEN_SCORE + (1 - PROVEN_SCORE) * fit[c]
-            df[f"p::{c}"] = df[f"p::{c}"].where(~proven, df[f"p::{c}"].clip(lower=floor))
     df["display_name"] = [
         f"{m}" + (f" ({h})" if isinstance(h, str) and h.strip() else "")
         for m, h in zip(df["Material"], df["Heat treatment"])
@@ -139,6 +135,10 @@ NOT_FOR_HEAT = ("aluminium", "magnesium")       # these lose most of their stren
 UNPROVEN_ELONGATION_SU = 1100   # MPa: above this an estimated elongation cannot be trusted (hardened, likely brittle)
 ESTIMATE_PENALTY = 0.9          # when ductility is required, a material with only an estimated elongation scores lower
 USAGE_LABEL = {2: "Common for this part", 1: "", 0: "Unusual for this part"}
+SUITABILITY_BOOST, CRITICAL_BOOST = 3, 2   # TOPSIS weights: ML is about half of the score, and critical priorities still count
+USAGE_FACTOR = {2: 1.0, 1: 0.9, 0: 0.7}   # adjusts the TOPSIS score: usual practice counts, but it can be outweighed
+# Far more strength than the part needs: from OVERDESIGN_FROM × the requirement, up to the full penalty at OVERDESIGN_TO ×
+OVERDESIGN_FROM, OVERDESIGN_TO, OVERDESIGN_PENALTY = 2.0, 5.0, 0.30
 
 
 def design_objective(form: dict) -> str:
@@ -146,6 +146,12 @@ def design_objective(form: dict) -> str:
     w = PRIORITY_WEIGHT[form.get("weight_priority", "not_sure")]
     c = PRIORITY_WEIGHT[form.get("cost_priority", "not_sure")]
     return "min_weight" if w > c else "min_cost"
+
+
+def _objective_text(form: dict, objective: str) -> str:
+    if form["weight_priority"] == form["cost_priority"] == "not_important":
+        return "Best suitability (cost and weight not important)"
+    return "Minimise mass" if objective == "min_weight" else "Minimise material cost"
 
 
 def _design_block(form: dict) -> dict | None:
@@ -159,8 +165,7 @@ def _design_block(form: dict) -> dict | None:
     return {
         "function": fn,
         "function_label": FUNCTIONS[fn]["label"],
-        "translation": translation(fn, calc["inputs"], "Minimise mass" if objective == "min_weight"
-                                   else "Minimise material cost", env),
+        "translation": translation(fn, calc["inputs"], _objective_text(form, objective), env),
         **calc,
         "index": material_index(fn, objective),
     }
@@ -186,8 +191,12 @@ def recommend(form: dict) -> dict:
     if form["environment"] == "high_temperature" and "Heat-resistant" in eng["classes"]:
         targets.setdefault("Heat-resistant", OTHER_IMPORTANCE)  # the environment is a requirement, chosen or not
     raw_w = topsis_weights(form)
-    if design:  # Ashby material index: as important as ML suitability
+    if design:  # Ashby material index: as important as suitability before the boost
         raw_w["index"] = raw_w["suitability"]
+    raw_w["suitability"] *= SUITABILITY_BOOST
+    for key, priority in (("cost", "cost_priority"), ("density", "weight_priority")):
+        if form[priority] == "critical":   # a critical priority must still count against the boost
+            raw_w[key] *= CRITICAL_BOOST
     crit_keys = list(raw_w)
 
     # 1. Screening: hard limits (user + design calculation) and include / avoid
@@ -275,6 +284,10 @@ def recommend(form: dict) -> dict:
         cand["suitability"] = cand[[f"p::{c}" for c in eng["classes"]]].max(axis=1)
     if design and "A5" in design["requirements"]:
         cand["suitability"] = cand["suitability"].where(~cand["A5_imputed"], cand["suitability"] * ESTIMATE_PENALTY)
+    if design:  # suitability for this load, not only for this kind of use
+        over = ((_strength_margin(cand, design) - OVERDESIGN_FROM) / (OVERDESIGN_TO - OVERDESIGN_FROM)).clip(0, 1)
+        cand["overdesign"] = 1 - OVERDESIGN_PENALTY * over
+        cand["suitability"] = cand["suitability"] * cand["overdesign"]
 
     # 3. Price layer: cited range per group; ranking uses the midpoint
     eff = effective_prices(prices, form["price_overrides"])
@@ -297,8 +310,7 @@ def recommend(form: dict) -> dict:
     if design:
         ix = design["index"]
         # Strength counts as the margin over what the part needs, and only up to STRENGTH_MARGIN
-        ratios = [cand[c["prop"]] / c["required"] for c in design["checks"] if not c.get("no_fos") and c["required"]]
-        margin = pd.concat(ratios, axis=1).min(axis=1).clip(upper=STRENGTH_MARGIN)
+        margin = _strength_margin(cand, design).clip(upper=STRENGTH_MARGIN)
         perf = margin ** ix["n"] / (cand["E"] if ix["use_E"] else 1.0)
         if ix["objective"] == "min_cost":
             kg_price = cand["price_category"].map(lambda c: eff[c]["typical"]).astype(float)
@@ -317,11 +329,17 @@ def recommend(form: dict) -> dict:
     w = np.array([raw_w[k] for k in crit_keys], dtype=float)
     benefit = np.array([k in ("suitability", "corrosion", "index") for k in crit_keys])
     cand["topsis"] = topsis(cand[crit].to_numpy(dtype=float), w, benefit)
-    # Materials normally used for this kind of part first; inside each level the TOPSIS order stands
-    cand["usage"] = usage_rank(cand["price_category"], form.get("part_type") or PART_TYPE_OF_FUNCTION.get(form["function"]))
-    cand = cand.sort_values(["usage", "topsis", "suitability"], ascending=False)
+    # Usual practice adjusts the score, so a clearly better or cheaper material can still come first
+    cand["usage"] = usage_rank(cand["price_category"], form.get("part_type") or PART_TYPE_OF_FUNCTION.get(form["function"]),
+                               form.get("usage_groups"))
+    factors = {**USAGE_FACTOR, 1: 1.0} if form["cost_priority"] == "critical" else USAGE_FACTOR  # cheaper groups may lead
+    cand["ranking"] = cand["topsis"] * cand["usage"].map(factors)
+    # Unusual groups come last, shown only if too few others remain. The AI judged this exact part, so its usual groups lead
+    ai_rule = bool(form.get("usage_groups"))
+    cand["tier"] = cand["usage"] if ai_rule else cand["usage"] > 0
+    cand = cand.sort_values(["tier", "ranking", "suitability"], ascending=False)
 
-    top = _varied(cand, form["top_n"])
+    top = _varied(cand, form["top_n"], trust_usual=ai_rule)
     ref = top.iloc[0]["cost_typical"]  # #1's typical cost, for the comparison label
     results = [_explain(row, rank, targets, eff, vol, ref, design)
                for rank, (_, row) in enumerate(top.iterrows(), start=1)]
@@ -344,23 +362,33 @@ def recommend(form: dict) -> dict:
     }
 
 
-def _varied(cand: pd.DataFrame, n: int) -> pd.DataFrame:
+def _strength_margin(cand: pd.DataFrame, design: dict) -> pd.Series:
+    """How many times each material exceeds the part's tightest strength requirement (1 = just meets it)."""
+    ratios = [cand[c["prop"]] / c["required"] for c in design["checks"] if not c.get("no_fos") and c["required"]]
+    return pd.concat(ratios, axis=1).min(axis=1)
+
+
+def _varied(cand: pd.DataFrame, n: int, trust_usual: bool = False) -> pd.DataFrame:
     """
     Top n in TOPSIS order, but a real choice: skip near-copies of a material already picked
     (same group, strength within NEAR_COPY) and limit how many come from one group.
     Poor fits are held back too, so variety never replaces a suitable material with a much weaker one.
-    Only a shortage of other candidates brings the skipped ones back: group limit, then copies, then poor fits.
+    Only a shortage of other candidates brings the skipped ones back: group limit, copies, poor fits,
+    and unusual groups last, so a weak but normal choice still beats a strong unusual one.
     """
     cap = max(MAX_PER_GROUP, math.ceil(n * 0.3))
-    floor = max(MIN_SUITABILITY, cand["suitability"].max() - SUITABILITY_GAP)
-    picked, over_cap, copies, poor = [], [], [], []
+    # measured from acceptable materials only: a rejected material must not set the bar
+    floor = max(MIN_SUITABILITY, cand.loc[cand["usage"] > 0, "suitability"].max() - SUITABILITY_GAP)
+    picked, over_cap, copies, poor, unusual = [], [], [], [], []
     kept: dict[str, list[tuple[float, float]]] = {}   # group -> (Sy, Su) already picked
-    rows = zip(cand["price_category"], cand["Sy"], cand["Su"], cand["suitability"])
-    for pos, (group, sy, su, suitability) in enumerate(rows):
+    rows = zip(cand["price_category"], cand["Sy"], cand["Su"], cand["suitability"], cand["usage"])
+    for pos, (group, sy, su, suitability, usage) in enumerate(rows):
         if len(picked) == n:
             break
         same = kept.get(group, [])
-        if suitability < floor:
+        if usage == 0:
+            unusual.append(pos)
+        elif suitability < floor and not (trust_usual and usage == 2):
             poor.append(pos)
         elif any(abs(a - sy) <= NEAR_COPY * sy and abs(b - su) <= NEAR_COPY * su for a, b in same):
             copies.append(pos)
@@ -369,7 +397,7 @@ def _varied(cand: pd.DataFrame, n: int) -> pd.DataFrame:
         else:
             picked.append(pos)
             kept.setdefault(group, []).append((sy, su))
-    picked += (over_cap + copies + poor)[:n - len(picked)]
+    picked += (over_cap + copies + poor + unusual)[:n - len(picked)]
     return cand.iloc[sorted(picked)]
 
 
@@ -429,6 +457,8 @@ def _explain(row, rank, targets, eff, vol, ref, design=None) -> dict:
                  "index_value": float(row["index_value"]),
                  "index_rel_pct": round(float(row["index_rel"]), 1)}
         why.append(f"Material index {design['index']['text']}: {row['index_rel']:.0f}% of the best candidate")
+        if row["overdesign"] < 1:
+            why.append(f"Much stronger than this part needs: suitability reduced by {(1 - row['overdesign']) * 100:.0f}%")
     return {
         **extra,
         "rank": rank,

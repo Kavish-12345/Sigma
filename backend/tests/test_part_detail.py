@@ -3,6 +3,7 @@ import pytest
 
 from backend.chat import llm
 from backend.chat.form_state import apply_answer, empty_form, normalise_form, to_recommend_payload
+from backend.engine.recommend import recommend
 from backend.chat.part_detail import (MAX_QUESTIONS, answer_detail, apply_effect, apply_step, clean_effect,
                                       clean_question, detail_spec, hint_fits, needs_details, set_hints)
 
@@ -36,9 +37,14 @@ def test_badly_shaped_effect_is_dropped_not_a_crash():
     assert clean_effect(bad, CLASSES) == {}
 
 
-def test_question_that_changes_nothing_is_rejected():
-    useless = {"question": "Favourite colour?", "options": [{"label": "Red"}, {"label": "Blue"}]}
-    assert clean_question(useless, CLASSES) is None
+def test_option_labels_have_no_code_style_text():
+    q = clean_question({"question": "Loading?", "options": [{"label": "shock_impact", "description": "high_cycle load"}, {"label": "steady"}]}, CLASSES)
+    assert q["options"][0]["label"] == "shock impact" and q["options"][0]["description"] == "high cycle load"
+
+
+def test_question_needs_real_options():
+    part_specific = {"question": "How is the big-end cap located?", "options": [{"label": "Fracture split"}, {"label": "Dowels"}]}
+    assert clean_question(part_specific, CLASSES)["options"][0]["effect"] == {}
     assert clean_question({"question": "Only one?", "options": QUESTION["options"][:1]}, CLASSES) is None
     assert clean_question(QUESTION, CLASSES)["options"][1]["value"] == "1"
 
@@ -82,6 +88,7 @@ def test_hint_in_the_wrong_unit_is_dropped():
     ("Medium (20,000-100,000 km or ~50,000 cycles)", "Medium (20,000-100,000 km)"),
     ("~30,000 km (≈1.5 ×10⁶ cycles)", "~30,000 km"),
     ("Long service life", "Long service life"), ("Forged, 2 passes", "Forged, 2 passes"),
+    ("Medium service life (10,000–50,000 cycles)", "Medium service life"),
 ])
 def test_made_up_cycle_counts_are_removed(label, clean):
     q = clean_question({"question": "How long?", "options": [{"label": label, "effect": {"loading": "cyclic"}},
@@ -158,6 +165,55 @@ def test_part_type_is_kept_only_if_known():
     assert g["part_type"] is None
 
 
+def test_ai_material_groups_are_checked():
+    f = form_with_part()
+    apply_step(f, {**FINISH, "usual_groups": ["stainless_mo", "made_up", 5], "unusual_groups": ["aluminium_wrought", "stainless_mo"]},
+               GROUPS, CLASSES)
+    assert f["usage_groups"] == {"normal": ["stainless_mo"], "unusual": ["aluminium_wrought"]}
+    assert to_recommend_payload(f)["usage_groups"] == f["usage_groups"]
+    g = form_with_part()
+    apply_step(g, {**FINISH, "usual_groups": "stainless", "unusual_groups": None}, GROUPS, CLASSES)
+    assert g["usage_groups"] is None
+
+
+def test_ai_groups_guide_the_ranking_and_replace_the_table():
+    base = dict(function="shaft", design_inputs={"P_kW": 7.5, "N_rpm": 1450, "M_Nm": 60, "d_mm": 30, "loading": "cyclic"},
+                properties=["Corrosion-resistant", "Structural"], primary_property="Corrosion-resistant",
+                environment="water_marine", cost_priority="not_important", weight_priority="not_important", top_n=5)
+    plain = recommend(base)["results"]
+    ai = recommend({**base, "usage_groups": {"normal": ["stainless_mo", "bronze"], "unusual": ["aluminium_wrought"]}})["results"]
+    assert ai != plain and not any(x["material_group"] == "aluminium_wrought" for x in ai)
+    assert ai[0]["usage"] == "Common for this part"
+    rejected = {**base, "usage_groups": {"normal": ["stainless_mo"], "unusual": ["aluminium_wrought", "bronze", "aluminium_cast"]}}
+    assert all(x["usage"] != "Unusual for this part" for x in recommend(rejected)["results"])  # weak normal beats strong unusual
+    mixed = {**base, "usage_groups": {"normal": ["copper_nickel"], "unusual": ["aluminium_wrought", "bronze", "aluminium_cast"]}}
+    groups = [x["material_group"] for x in recommend(mixed)["results"]]
+    assert "stainless_mo" in groups or "stainless_austenitic" in groups  # a rejected material must not raise the bar
+
+
+def test_ai_usual_groups_lead_even_with_a_lower_score():
+    rod = dict(function="general", part_type="rod", properties=["Castings", "Wear-resistant", "Heat-resistant"],
+               design_inputs={"section": "rectangle", "b_mm": 18, "h_mm": 30, "F_kN": 25, "M_Nm": 40, "Kt": 2, "loading": "shock"},
+               environment="high_temperature", cost_priority="important", weight_priority="important", top_n=5)
+    groups = [x["material_group"] for x in recommend({**rod, "usage_groups": {"normal": ["cast_steel"], "unusual": []}})["results"]]
+    assert groups and groups[0] == "cast_steel"
+
+
+def test_environment_suggests_its_class():
+    f = form_with_part()
+    f["environment"] = "water_marine"
+    apply_step(f, FINISH, GROUPS, CLASSES + ["Corrosion-resistant"])
+    assert f["suggested"][0] == "Corrosion-resistant"
+
+
+def test_limits_card_shows_what_is_already_calculated():
+    f = form_with_part()
+    apply_answer(f, "function", "tie", "", GROUPS, CLASSES)
+    apply_answer(f, "design_inputs", {"F_kN": 20, "d_mm": 16}, "", GROUPS, CLASSES)
+    spec = llm.question_spec("min_limits", {}, f, CLASSES)
+    assert "yield strength ≥" in spec["info"] and "stricter" in spec["info"]
+
+
 def test_blank_part_name_falls_back_to_the_users_words():
     f = empty_form()
     assert apply_answer(f, "part_name", "", "A connecting rod", GROUPS) is None
@@ -228,12 +284,12 @@ def test_same_part_and_answers_reuse_the_saved_question(monkeypatch):
 
 
 def test_chat_falls_back_to_fixed_form_when_the_model_fails(monkeypatch):
-    done = _run(monkeypatch, form_with_part(), ["not json", None])
+    done = _run(monkeypatch, form_with_part(), ["not json", None, {}])
     assert done["form"]["details_done"] and done["question"]["field"] == "function"
 
 
 def test_questions_are_capped(monkeypatch):
     f = form_with_part()
     f["details"] = [{"question": str(i), "answer": "x"} for i in range(MAX_QUESTIONS)]
-    done = _run(monkeypatch, f, [QUESTION, QUESTION])  # the model ignores the instruction to finish
+    done = _run(monkeypatch, f, [QUESTION, QUESTION, QUESTION])  # the model ignores the instruction to finish
     assert done["form"]["details_done"] and not done["form"]["pending_detail"]

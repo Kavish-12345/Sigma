@@ -152,7 +152,8 @@ def alloy_group(material, family: str) -> str:
 # Heat-treatment condition (optional feature)
 # --------------------------------------------------------------------------
 _HT_RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("quenched_tempered", ("quench", "temper", "q+t", "q&t", "q + t", "hardened", "harden")),
+    ("quenched_tempered", ("quench", "temper", "q+t", "q&t", "q + t", "hardened", "harden",
+                           "heat treat", "heat-treat", "improved", "nitrid", "carburi")),  # "Improved" = Q+T in GOST data
     ("normalized", ("normali",)),
     ("solution_aged", ("solution", "aged", "ageing", "aging", "precipitation")),
     ("annealed", ("anneal", "soft", "spheroid")),

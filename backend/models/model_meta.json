@@ -1,8 +1,8 @@
 {
   "model": "Gradient Boosting",
   "params": {
-    "estimator__max_depth": null,
-    "estimator__learning_rate": 0.05
+    "max_iter": 300,
+    "learning_rate": 0.05
   },
   "features": [
     "Su",
@@ -46,26 +46,21 @@
     "method": "GroupKFold(5), groups = alloy name without temper",
     "scores": {
       "All": {
-        "micro_F1": 0.818,
-        "macro_F1": 0.73,
-        "exact_match": 0.71,
-        "hamming_loss": 0.05
-      },
-      "Ferrous": {
-        "micro_F1": 0.827,
-        "macro_F1": 0.796,
-        "exact_match": 0.769,
-        "hamming_loss": 0.038
-      },
-      "Non-ferrous": {
-        "micro_F1": 0.806,
-        "macro_F1": 0.572,
-        "exact_match": 0.584,
-        "hamming_loss": 0.074
+        "micro_F1": 0.862,
+        "macro_F1": 0.759,
+        "exact_match": 0.714,
+        "hamming_loss": 0.048
       }
     }
   },
   "n_train": 1401,
-  "trained_on": "2026-10-11",
-  "sklearn_version": "1.9.1"
+  "trained_on": "2026-10-31",
+  "sklearn_version": "1.9.1",
+  "labels_added": {
+    "Heat-treatable": 189,
+    "Structural": 201,
+    "Corrosion-resistant": 65,
+    "Heat-resistant": 5,
+    "Castings": 1
+  }
 }

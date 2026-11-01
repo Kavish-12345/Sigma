@@ -52,28 +52,22 @@ export default function ResultCard({ r, onOverride, onDatasheet, onCompare, comp
         </div>
         <strong>{r.suitability_pct.toFixed(0)}%</strong>
       </div>
-      {FIT.map(([label, lo, hi]) => {
-        const names = Object.entries(r.class_suitability_pct).filter(([, p]) => p >= lo && p < hi).map(([c]) => c);
-        return names.length > 0 && <div className="muted small" key={label}>{label}: {names.join(", ")}</div>;
-      })}
-      {r.usage && <div className="muted small">{r.usage}</div>}
-      {r.a5_imputed && <div className="muted small">Elongation is estimated, not measured</div>}
+      <div className="muted small fit-line">
+        {FIT.map(([label, lo, hi]) => {
+          const names = Object.entries(r.class_suitability_pct).filter(([, p]) => p >= lo && p < hi).map(([c]) => c);
+          return names.length > 0 && <span key={label}>{label}: {names.join(", ")}</span>;
+        })}
+        {r.usage && <span>{r.usage}</span>}
+        {r.a5_imputed && <span>Elongation estimated</span>}
+      </div>
 
       {r.design_check && (
         <div className="dcheck">
-          <span className="muted small">Design check</span>
-          {r.design_check.map((c) => (
-            <div key={c.name} className={`dcheck-row ${c.ok ? "ok" : "bad"}`}>
-              <span>{c.ok ? "✔" : "✖"} {c.name}</span>
-              <span className="mono">
-                {c.prop} {c.actual.toLocaleString()} vs {c.required.toLocaleString()} MPa
-                {c.fos != null ? ` · FoS ${c.fos}` : ` · ${c.margin}×`}
-              </span>
-            </div>
-          ))}
-          <div className="dcheck-row">
-            <span>Material index</span>
-            <span className="mono">{r.index_rel_pct.toFixed(0)}% of best</span>
+          <div className={`dcheck-row ${r.design_check.every((c) => c.ok) ? "ok" : "bad"}`}>
+            <span>
+              {r.design_check.every((c) => c.ok) ? "✔ Passes" : "✖ Fails"} {r.design_check.length} design checks
+            </span>
+            {r.min_fos != null && <span className="mono">Lowest safety factor {r.min_fos}</span>}
           </div>
         </div>
       )}
@@ -133,7 +127,7 @@ export default function ResultCard({ r, onOverride, onDatasheet, onCompare, comp
               </ul>
             </>
           )}
-          <h4>Suitability per target class (60% ML model, 40% engineering properties)</h4>
+          <h4>Suitability per target class (80% ML model, 20% engineering properties)</h4>
           {Object.entries(r.class_suitability_pct).map(([c, p]) => (
             <div className="wbar" key={c}>
               <span>{c}</span>

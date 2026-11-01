@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-ML_WEIGHT = 0.6   # suitability = 60% trained model + 40% engineering fit
+ML_WEIGHT = 0.8   # suitability = 80% trained model + 20% engineering fit (100% put brass first for springs)
 HB_PER_SU = 1 / 3.45  # Brinell hardness estimated as Su/3.45 where the dataset has no hardness
-PROVEN_SCORE = 0.7    # lowest suitability for a class the material's own data proves
 HARDENED = r"quench|temper|harden|heat treat|improved|nitrid|carburi"  # "Improved" = Q+T in GOST data
 
 CAST_GROUPS = ("aluminium_cast", "cast_steel", "stainless_cast", "grey_cast_iron", "ductile_iron")
@@ -43,7 +42,7 @@ USAGE = {
     "rod": {"normal": ("alloy_steel",),
             "unusual": ("free_cutting_steel", "spring_steel", "grey_cast_iron", *STAINLESS, *COPPER)},
     "spring": {"normal": ("spring_steel",),
-               "unusual": ("cast_steel", "free_cutting_steel", *IRON, *LIGHT)},
+               "unusual": ("brass", "cast_steel", "free_cutting_steel", *IRON, *LIGHT)},
     "vessel": {"normal": ("carbon_steel", "alloy_steel", "stainless_mo", "stainless_austenitic"),
                "unusual": ("free_cutting_steel", "spring_steel", *IRON, "magnesium_alloy", "magnesium_re")},
     "beam": {"normal": ("carbon_steel", "aluminium_wrought", "aluminium_high_strength"),
@@ -53,9 +52,10 @@ PART_TYPE_OF_FUNCTION = {"gear": "gear", "shaft": "shaft", "tie": "rod", "spring
                          "pressure_vessel": "vessel", "beam": "beam"}
 
 
-def usage_rank(group: pd.Series, part_type: str | None) -> pd.Series:
-    """2 = normal for this kind of part, 1 = no rule, 0 = unusual. No known part type: all equal."""
-    rule = USAGE.get(part_type, {})
+def usage_rank(group: pd.Series, part_type: str | None, ai_rule: dict | None = None) -> pd.Series:
+    """2 = normal for this part, 1 = no rule, 0 = unusual. The AI's judgement for this exact part
+    and service comes first; USAGE is the fallback for Form mode or if the AI gave none."""
+    rule = ai_rule or USAGE.get(part_type, {})
     rank = {**{g: 2 for g in rule.get("normal", ())}, **{g: 0 for g in rule.get("unusual", ())}}
     return group.map(rank).fillna(1).astype(int)
 
@@ -63,16 +63,6 @@ def usage_rank(group: pd.Series, part_type: str | None) -> pd.Series:
 def _ramp(x: pd.Series, low: float, high: float) -> pd.Series:
     """0 at low, 1 at high, straight line between."""
     return ((x - low) / (high - low)).clip(0, 1)
-
-
-def proven_by_data(df: pd.DataFrame) -> dict[str, pd.Series]:
-    """Rows whose own data proves the class, whatever the model says: hardened means heat-treatable,
-    and a wrought steel with real yield strength and measured ductility can carry structural load."""
-    text = df["Heat treatment"].fillna("").str.lower()
-    hardened = (text.str.contains(HARDENED) & ~text.str.contains("anneal")) | (df["ht_cat"] == "solution_aged")
-    wrought_steel = (df["family"] == "ferrous") & ~df["price_category"].isin(CAST_GROUPS + ("free_cutting_steel",))
-    return {"Heat-treatable": hardened & (df["price_category"].map(HARDENING).fillna(0) >= 0.5),
-            "Structural": wrought_steel & (df["Sy"] >= 235) & (df["A5"] >= 10) & ~df["A5_imputed"]}
 
 
 def class_fit(df: pd.DataFrame) -> dict[str, pd.Series]:

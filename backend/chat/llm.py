@@ -24,7 +24,7 @@ import json
 import re
 import os
 
-from backend.engine.design import COMMON_INPUTS, FUNCTIONS, function_options
+from backend.engine.design import COMMON_INPUTS, FUNCTIONS, calculate, function_options
 from backend.engine.options import FIELDS, MIN_LIMIT_FIELDS, property_options
 
 from .form_state import FIELD_ORDER, OPTIONAL, REQUIRED, apply_answer, missing_fields, normalise_form
@@ -80,7 +80,8 @@ def _client():
     key = os.getenv("GROQ_API_KEY") or os.getenv("LLM_API_KEY")
     if not key:
         raise RuntimeError("No API key. Put GROQ_API_KEY=... in the .env file in the project root.")
-    return OpenAI(api_key=key, base_url=os.getenv("LLM_BASE_URL", BASE_URL))
+    # the free plan allows few tokens per minute: wait and retry rather than fail the turn
+    return OpenAI(api_key=key, base_url=os.getenv("LLM_BASE_URL", BASE_URL), max_retries=6)
 
 
 def group_labels(price_categories: dict) -> dict:
@@ -103,6 +104,7 @@ QUESTION_TITLE = {
 }
 
 LIMIT_UNITS = {"Su": "MPa", "Sy": "MPa", "A5": "%", "E": "MPa", "Ro_max": "kg/m³"}
+LIMIT_NAMES = {"Su": "tensile strength", "Sy": "yield strength", "A5": "elongation", "E": "stiffness"}
 LIMIT_HINTS = {"Su": "e.g. 600", "Sy": "e.g. 400", "A5": "e.g. 10", "E": "steel ≈ 210000",
                "Ro_max": "steel ≈ 7850, Al ≈ 2700"}
 
@@ -144,6 +146,10 @@ def question_spec(field: str | None, groups: dict, form: dict, classes: list[str
     elif field == "min_limits":
         spec.update(type="limits", options=[{"value": k, "label": MIN_LIMIT_FIELDS[k], "unit": LIMIT_UNITS[k],
                                              "hint": LIMIT_HINTS[k]} for k in MIN_LIMIT_FIELDS])
+        if isinstance(form.get("design_inputs"), dict) and form.get("function") in FUNCTIONS:
+            need = calculate(form["function"], form["design_inputs"])["requirements"]
+            done = ", ".join(f"{LIMIT_NAMES[k]} ≥ {v:g} {LIMIT_UNITS[k]}" for k, v in need.items())
+            spec["info"] = f"Already calculated: {done}. Only add a limit if yours is stricter; the stricter value is used."
     else:  # include / avoid
         other = form.get("avoid" if field == "include" else "include") or []
         spec.update(type="multi", options=[{"value": k, "label": v, "disabled": k in other}
@@ -283,7 +289,7 @@ def _ask_json(client, model: str, extra: dict, prompt: str) -> dict | None:
     try:
         res = client.chat.completions.create(
             model=model, messages=[{"role": "system", "content": prompt}, {"role": "user", "content": "Return the JSON."}],
-            temperature=0.2, max_tokens=2500, response_format={"type": "json_object"}, **extra,
+            temperature=0.2, max_tokens=1500, response_format={"type": "json_object"}, **extra,
         )
         return json.loads(res.choices[0].message.content or "")
     except Exception:
@@ -291,10 +297,10 @@ def _ask_json(client, model: str, extra: dict, prompt: str) -> dict | None:
 
 
 def _part_step(client, model: str, extra: dict, form: dict, group_keys: list[str], classes: list[str]) -> str:
-    """Next part-specific question (or the wrap-up). Falls back to the fixed form if the model fails twice.
+    """Next part-specific question (or the wrap-up). Falls back to the fixed form if the model fails three times.
     Replies are kept per part and answers, so the same path gives the same questions until the server restarts."""
     key = (form["part_name"].strip().lower(), tuple(d["answer"] for d in form["details"]))
-    for _ in range(2):
+    for _ in range(3):
         data = _PART_CACHE.get(key) or _ask_json(client, model, extra, detail_prompt(form, classes))
         text = apply_step(form, data, group_keys, classes)
         if text is not None:
@@ -395,7 +401,7 @@ def chat_events(messages: list[dict], form: dict | None, price_categories: dict,
             clean = _ToolTextFilter()
             try:
                 stream = client.chat.completions.create(
-                    model=model, messages=msgs, temperature=0.3, max_tokens=2000, stream=True,
+                    model=model, messages=msgs, temperature=0.3, max_tokens=1000, stream=True,
                     **tool_args, **extra,
                 )
                 for chunk in stream:
@@ -448,8 +454,8 @@ def chat_events(messages: list[dict], form: dict | None, price_categories: dict,
                      if not missing else f"Thanks! Could you tell me {QUESTION_HINT[missing[0]]}?")
             yield {"type": "token", "text": reply}
     except Exception as e:  # network / key / model errors -> friendly message, form kept
-        reply = (f"Sorry, the chat service is unavailable right now ({type(e).__name__}: {str(e)[:150]}). "
-                 "You can switch to Form mode; it gives identical results.")
+        reply = (f"Sorry, the chat service is unavailable right now ({type(e).__name__}: {str(e)[:500]}). "
+                 "Please wait a minute and send your message again, or use Form mode, which works without AI.")
         yield {"type": "error", "message": reply}
 
     missing = missing_fields(form)

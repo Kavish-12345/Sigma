@@ -12,17 +12,25 @@ export default function Results({ result, summary, options, form, busy, priceOve
   const [compare, setCompare] = useState([]);
   const [showCompare, setShowCompare] = useState(false);
   const [showChart, setShowChart] = useState(false);
+  const [showDesign, setShowDesign] = useState(false);
   const toggleCompare = (name) =>
     setCompare((c) => (c.includes(name) ? c.filter((x) => x !== name) : c.length < 3 ? [...c, name] : c));
   const compareItems = result.results.filter((r) => compare.includes(r.material));
+  const notes = result.form?.part_notes || [];
 
   return (
     <div className="results">
       <div className="results-head">
-        <div>
-          <h2>Recommended materials{form.part_name ? ` for: ${form.part_name}` : ""}</h2>
+        <div className="results-name">
+          <span className="mono small">RECOMMENDED MATERIALS</span>
+          <h2>{form.part_name || "Your part"}</h2>
         </div>
         <div className="row">
+          {(result.design || notes.length > 0) && (
+            <button className="ghost" onClick={() => setShowDesign(true)}>
+              Design details
+            </button>
+          )}
           {summary && result.results.length > 0 && (
             <button className="ghost" onClick={() => setShowChart(true)}>
               Property chart
@@ -55,21 +63,6 @@ export default function Results({ result, summary, options, form, busy, priceOve
       </div>
       )}
 
-      <DesignPanel design={result.design} result={result} onChart={summary ? () => setShowChart(true) : null} />
-
-      {result.form?.part_notes?.length > 0 && (
-        <div className="explain-strip">
-          <div>
-            <strong>Check for this part</strong>
-            <ul className="muted small">
-              {result.form.part_notes.map((n) => (
-                <li key={n}>{n}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
-
       {result.message && <div className="error">{result.message}</div>}
       {busy && <div className="muted">Re-ranking…</div>}
 
@@ -99,6 +92,16 @@ export default function Results({ result, summary, options, form, busy, priceOve
       )}
 
       {sheet && <Datasheet r={sheet} summary={summary} partName={form.part_name} onClose={() => setSheet(null)} />}
+      {showDesign && (
+        <Popup kicker="DESIGN DETAILS" title={result.design?.function_label || form.part_name} className="design-modal" onClose={() => setShowDesign(false)}>
+          <DesignPanel
+            design={result.design}
+            result={result}
+            notes={notes}
+            onChart={summary ? () => { setShowDesign(false); setShowChart(true); } : null}
+          />
+        </Popup>
+      )}
       {showChart && (
         <ChartModal onClose={() => setShowChart(false)} design={result.design}>
           <AshbyChart
@@ -119,8 +122,7 @@ export default function Results({ result, summary, options, form, busy, priceOve
   );
 }
 
-// shortlist on the strength-vs-density chart, in a popup
-function ChartModal({ onClose, children, design }) {
+function Popup({ kicker, title, note, className = "chart-modal", onClose, children }) {
   useEffect(() => {
     const k = (e) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", k);
@@ -128,16 +130,12 @@ function ChartModal({ onClose, children, design }) {
   }, [onClose]);
   return createPortal(
     <div className="modal-back" onClick={onClose}>
-      <div className="modal chart-modal" onClick={(e) => e.stopPropagation()}>
+      <div className={`modal ${className}`} onClick={(e) => e.stopPropagation()}>
         <div className="why-head">
           <div>
-            <span className="muted small mono">PROPERTY CHART</span>
-            <h3>{design ? "Ashby chart with selection line" : "Your shortlist on the property chart"}</h3>
-            <p className="muted small">
-              {design
-                ? `Dashed line: constant material index M = ${design.index.mass_text} through #1. Materials above the line perform better for this function; the shaded band is removed by the design calculation.`
-                : "Recommended materials (orange) among every material in the dataset."}
-            </p>
+            <span className="muted small mono">{kicker}</span>
+            <h3>{title}</h3>
+            {note && <p className="muted small">{note}</p>}
           </div>
           <button className="qclose" onClick={onClose} aria-label="Close">✕</button>
         </div>
@@ -145,5 +143,23 @@ function ChartModal({ onClose, children, design }) {
       </div>
     </div>,
     document.body
+  );
+}
+
+// shortlist on the strength-vs-density chart, in a popup
+function ChartModal({ onClose, children, design }) {
+  return (
+    <Popup
+      kicker="PROPERTY CHART"
+      title={design ? "Ashby chart with selection line" : "Your shortlist on the property chart"}
+      note={
+        design
+          ? `Dashed line: constant material index M = ${design.index.mass_text} through #1. Materials above the line perform better for this function; the shaded band is removed by the design calculation.`
+          : "Recommended materials (orange) among every material in the dataset."
+      }
+      onClose={onClose}
+    >
+      {children}
+    </Popup>
   );
 }
