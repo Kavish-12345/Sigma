@@ -1,0 +1,17 @@
+# Run on the VM from the project root:  docker compose up -d --build
+name: sigma
+services:
+  api:
+    build: .
+    container_name: sigma-api
+    env_file: .env            # GROQ_API_KEY, created on the VM and never committed
+    ports:
+      - "127.0.0.1:7860:7860" # reachable only through nginx, not from the internet
+    restart: unless-stopped
+    mem_limit: 450m           # small shared VM: keep the other projects safe
+    memswap_limit: 900m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
